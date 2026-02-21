@@ -1,0 +1,16 @@
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+
+# Local machine/session files
+.claude/
+CLAUDE.md
+daemon.json
+overseer.json
+rigs.json
+town.json

@@ -1,0 +1,113 @@
+import Foundation
+import MayorFEM
+
+private struct CLIOptions {
+    var steps: Int = 10
+    var displacement: Float = 0.08
+    var backend: ComputeBackendChoice = .auto
+
+    static func parse(arguments: [String]) throws -> CLIOptions {
+        var options = CLIOptions()
+        var index = 1
+
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "--steps":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value > 1 else {
+                    throw FEMError.invalidBoundaryCondition("--steps requires an integer > 1")
+                }
+                options.steps = value
+            case "--disp":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value > 0 else {
+                    throw FEMError.invalidBoundaryCondition("--disp requires a positive floating point value")
+                }
+                options.displacement = value
+            case "--backend":
+                index += 1
+                guard index < arguments.count else {
+                    throw FEMError.invalidBoundaryCondition("--backend requires one of auto|metal|cpu")
+                }
+                switch arguments[index] {
+                case "auto":
+                    options.backend = .auto
+                case "metal":
+                    options.backend = .metal
+                case "cpu":
+                    options.backend = .cpu
+                default:
+                    throw FEMError.invalidBoundaryCondition("--backend requires one of auto|metal|cpu")
+                }
+            case "--help", "-h":
+                printUsage()
+                exit(0)
+            default:
+                throw FEMError.invalidBoundaryCondition("Unknown argument: \(argument)")
+            }
+            index += 1
+        }
+
+        return options
+    }
+
+    static func printUsage() {
+        print("""
+        mayor-fem
+
+        Usage:
+          swift run mayor-fem [--steps N] [--disp value] [--backend auto|metal|cpu]
+
+        Example:
+          swift run mayor-fem --steps 12 --disp 0.08 --backend auto
+        """)
+    }
+}
+
+func sumXReactionsOnFixedFace(problem: FEMProblem, reactions: [Float]) -> Float {
+    var total: Float = 0
+    for bc in problem.prescribedDisplacements where bc.component == 0 {
+        if abs(problem.mesh.nodes[bc.node].x) < 1e-6 {
+            total += reactions[bc.dof]
+        }
+    }
+    return total
+}
+
+do {
+    let options = try CLIOptions.parse(arguments: CommandLine.arguments)
+    let problem = ExampleProblems.displacementControlledTension(
+        endDisplacement: options.displacement,
+        loadSteps: options.steps
+    )
+
+    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: options.backend)
+    let result = try solver.solve()
+
+    print("Backend: \(result.backendName)")
+    print("Converged: \(result.converged)")
+    print("Step history:")
+    for step in result.stepHistory {
+        print(
+            String(
+                format: "  step %2d | load=%.3f | iters=%2d | res=%.3e | eqp_max=%.4f | dmg_max=%.4f",
+                step.step,
+                step.loadFactor,
+                step.iterations,
+                step.residualNorm,
+                step.maxEquivalentPlasticStrain,
+                step.maxDamage
+            )
+        )
+    }
+
+    let supportReaction = sumXReactionsOnFixedFace(problem: problem, reactions: result.reactions)
+    let finalDisp = result.displacements.map(\.x).max() ?? 0
+    print(String(format: "Final prescribed displacement: %.5f", finalDisp))
+    print(String(format: "Support reaction (x, fixed face sum): %.5f", supportReaction))
+} catch {
+    fputs("Error: \(error)\n", stderr)
+    CLIOptions.printUsage()
+    exit(1)
+}
