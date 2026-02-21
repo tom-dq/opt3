@@ -157,11 +157,19 @@ public struct StepResult {
     public var maxDamage: Float
 }
 
+public struct StepSnapshot {
+    public var step: Int
+    public var loadFactor: Float
+    public var displacements: [SIMD3<Float>]
+    public var elementStates: [ElementState]
+}
+
 public struct SolveResult {
     public var displacements: [SIMD3<Float>]
     public var reactions: [Float]
     public var elementStates: [ElementState]
     public var stepHistory: [StepResult]
+    public var stepSnapshots: [StepSnapshot]
     public var backendName: String
     public var converged: Bool
 }

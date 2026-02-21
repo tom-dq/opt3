@@ -6,6 +6,8 @@ private struct CLIOptions {
     var displacement: Float = 0.08
     var backend: ComputeBackendChoice = .auto
     var runBenchmarks: Bool = false
+    var visualizationDirectory: String?
+    var deformationScale: Float = 8.0
 
     static func parse(arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -43,6 +45,18 @@ private struct CLIOptions {
                 }
             case "--benchmarks":
                 options.runBenchmarks = true
+            case "--visualize":
+                index += 1
+                guard index < arguments.count else {
+                    throw FEMError.invalidBoundaryCondition("--visualize requires an output directory")
+                }
+                options.visualizationDirectory = arguments[index]
+            case "--deformation-scale":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value > 0 else {
+                    throw FEMError.invalidBoundaryCondition("--deformation-scale requires a positive floating point value")
+                }
+                options.deformationScale = value
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -61,10 +75,12 @@ private struct CLIOptions {
 
         Usage:
           swift run mayor-fem [--steps N] [--disp value] [--backend auto|metal|cpu] [--benchmarks]
+                              [--visualize output-dir] [--deformation-scale value]
 
         Example:
           swift run mayor-fem --steps 12 --disp 0.08 --backend auto
           swift run mayor-fem --benchmarks --backend cpu
+          swift run mayor-fem --steps 12 --visualize out/vtk --deformation-scale 10
         """)
     }
 }
@@ -130,6 +146,17 @@ do {
     let finalDisp = result.displacements.map(\.x).max() ?? 0
     print(String(format: "Final prescribed displacement: %.5f", finalDisp))
     print(String(format: "Support reaction (x, fixed face sum): %.5f", supportReaction))
+
+    if let visualizationDirectory = options.visualizationDirectory {
+        let files = try FEMVisualization.writeVTKSeries(
+            problem: problem,
+            result: result,
+            outputDirectory: visualizationDirectory,
+            deformationScale: options.deformationScale
+        )
+        print("Visualization files written: \(files.count)")
+        print("Visualization directory: \(visualizationDirectory)")
+    }
 } catch {
     fputs("Error: \(error)\n", stderr)
     CLIOptions.printUsage()

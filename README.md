@@ -12,6 +12,8 @@ MayorFEM is a clean-slate nonlinear finite element prototype for macOS with a Me
 - Element-level consistent tangent linearization (local directional derivatives through constitutive update).
 - Metal backend for element residual/state evaluation; CPU backend remains available as fallback.
 - Literature-style regression benchmark suite for yield transition and translation invariance checks.
+- Stepwise load ramp snapshots for gradual loading analysis.
+- Visualization export to VTK (`.vtk` + `series.pvd`) including stress, exaggerated deformation, and enforced displacement fields.
 
 ## Run
 
@@ -24,6 +26,21 @@ Arguments:
 - `--steps N` number of load steps
 - `--disp value` end displacement on loaded face (x direction)
 - `--backend auto|metal|cpu`
+- `--steps N` controls gradual load increase from 0 to full prescribed displacement
+
+### Visualization Export
+
+```bash
+swift run mayor-fem --steps 12 --disp 0.08 \
+  --visualize out/vtk --deformation-scale 10 --backend auto
+```
+
+This writes one VTK file per converged load step plus `series.pvd` for ParaView time-series loading.
+
+Included fields:
+
+- Cell data: `von_mises`, `eq_plastic_strain`, `damage`, `load_factor`
+- Point data: `displacement`, `prescribed_displacement`, `enforced_dof_count`, `prescribed_node`
 
 Run benchmark suite:
 

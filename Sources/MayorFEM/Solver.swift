@@ -67,6 +67,7 @@ public final class NonlinearFEMSolver {
         var dofs = Array(repeating: Float(0), count: dofCount)
         var states = Array(repeating: ElementState.zero, count: preparedMesh.elements.count)
         var stepHistory: [StepResult] = []
+        var stepSnapshots: [StepSnapshot] = []
         var finalReactions = Array(repeating: Float(0), count: dofCount)
 
         for step in 1...problem.controls.loadSteps {
@@ -153,6 +154,14 @@ public final class NonlinearFEMSolver {
                     maxDamage: maxDamage
                 )
             )
+            stepSnapshots.append(
+                StepSnapshot(
+                    step: step,
+                    loadFactor: loadFactor,
+                    displacements: dofVectorToNodalDisplacements(dofs, nodeCount: preparedMesh.nodes.count),
+                    elementStates: states
+                )
+            )
         }
 
         return SolveResult(
@@ -160,6 +169,7 @@ public final class NonlinearFEMSolver {
             reactions: finalReactions,
             elementStates: states,
             stepHistory: stepHistory,
+            stepSnapshots: stepSnapshots,
             backendName: backendName,
             converged: true
         )

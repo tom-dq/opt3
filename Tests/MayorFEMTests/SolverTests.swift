@@ -1,5 +1,6 @@
 import Testing
 @testable import MayorFEM
+import Foundation
 
 @Test
 func preparedMeshVolumesStayPositive() throws {
@@ -19,12 +20,37 @@ func displacementControlledTensionConvergesOnCPU() throws {
 
     #expect(result.converged)
     #expect(result.stepHistory.count == 6)
+    #expect(result.stepSnapshots.count == 6)
 
     let maxEquivalentPlastic = result.elementStates.map(\.equivalentPlasticStrain).max() ?? 0
     #expect(maxEquivalentPlastic > 0)
 
     let maxDamage = result.elementStates.map(\.damage).max() ?? 0
     #expect(maxDamage >= 0)
+}
+
+@Test
+func loadRampAndEnforcedDisplacementsAreAppliedGradually() throws {
+    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.04, loadSteps: 5)
+    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
+    let result = try solver.solve()
+
+    #expect(result.stepSnapshots.count == 5)
+
+    let loadedBCs = problem.prescribedDisplacements.filter { $0.component == 0 && abs($0.value) > 1e-8 }
+    #expect(!loadedBCs.isEmpty)
+
+    var previousLoad: Float = -1
+    for snapshot in result.stepSnapshots {
+        #expect(snapshot.loadFactor > previousLoad)
+        previousLoad = snapshot.loadFactor
+
+        for bc in loadedBCs {
+            let expectedValue = bc.value * snapshot.loadFactor
+            let actualValue = snapshot.displacements[bc.node].x
+            #expect(abs(actualValue - expectedValue) < 1e-5)
+        }
+    }
 }
 
 @Test
@@ -67,4 +93,32 @@ func literatureBenchmarksPassOnMetalWhenAvailable() throws {
         // Metal device not available in this environment.
         return
     }
+}
+
+@Test
+func vtkVisualizationSeriesContainsStressDeformationAndBCFields() throws {
+    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.02, loadSteps: 3)
+    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
+    let result = try solver.solve()
+
+    let outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mayorfem-viz-\(UUID().uuidString)", isDirectory: true)
+
+    let files = try FEMVisualization.writeVTKSeries(
+        problem: problem,
+        result: result,
+        outputDirectory: outputURL.path,
+        deformationScale: 12
+    )
+
+    #expect(files.count == 3)
+    #expect(FileManager.default.fileExists(atPath: outputURL.appendingPathComponent("series.pvd").path))
+
+    let firstContent = try String(contentsOfFile: files[0], encoding: .utf8)
+    #expect(firstContent.contains("SCALARS von_mises float 1"))
+    #expect(firstContent.contains("VECTORS displacement float"))
+    #expect(firstContent.contains("VECTORS prescribed_displacement float"))
+    #expect(firstContent.contains("SCALARS enforced_dof_count int 1"))
+
+    try? FileManager.default.removeItem(at: outputURL)
 }

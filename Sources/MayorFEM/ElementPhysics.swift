@@ -34,6 +34,7 @@ struct ElementNodalVectors {
 struct ElementLocalResponse {
     var forces: ElementNodalVectors
     var updatedState: ElementState
+    var vonMisesStress: Float
 }
 
 @inline(__always)
@@ -118,6 +119,8 @@ func computeLocalElementResponse(
 
     let softening = max(0, 1.0 - damage)
     let kirchhoff = softening * (deviatoric + meanStress * identity)
+    let deviatoricKirchhoff = softening * deviatoric
+    let vonMisesStress = sqrt(max(0, 1.5 * doubleContraction(deviatoricKirchhoff)))
 
     let inverseTransposeF = simd_transpose(simd_inverse(deformationGradient))
     let firstPiola = kirchhoff * inverseTransposeF
@@ -129,6 +132,7 @@ func computeLocalElementResponse(
             n2: geometry.volume * (firstPiola * g2),
             n3: geometry.volume * (firstPiola * g3)
         ),
-        updatedState: ElementState(equivalentPlasticStrain: equivalentPlasticStrain, damage: damage)
+        updatedState: ElementState(equivalentPlasticStrain: equivalentPlasticStrain, damage: damage),
+        vonMisesStress: vonMisesStress
     )
 }
