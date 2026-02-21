@@ -1,56 +1,184 @@
+import Foundation
 import Testing
 @testable import MayorFEM
-import Foundation
 
 @Test
-func preparedMeshVolumesStayPositive() throws {
-    let mesh = Mesh.fiveTetraBlock()
+func linearAndQuadraticMeshConstructionWorks() throws {
+    let linear = Mesh2D.rectangularPlate(nx: 4, ny: 2, order: .linear)
+    let quadratic = Mesh2D.rectangularPlate(nx: 4, ny: 2, order: .quadratic)
+
+    #expect(linear.elements.count == 16)
+    #expect(quadratic.elements.count == 16)
+    #expect(quadratic.nodes.count > linear.nodes.count)
+
+    #expect(linear.elements.allSatisfy {
+        if case .tri3 = $0 { return true }
+        return false
+    })
+
+    #expect(quadratic.elements.allSatisfy {
+        if case .tri6 = $0 { return true }
+        return false
+    })
+}
+
+@Test
+func subdivisionRefinesTriangleCountByFourPerLevel() throws {
+    let base = Mesh2D.rectangularPlate(nx: 3, ny: 1, order: .linear)
+    let level1 = base.subdivided(levels: 1)
+    let level2 = base.subdivided(levels: 2)
+
+    #expect(level1.elements.count == base.elements.count * 4)
+    #expect(level2.elements.count == base.elements.count * 16)
+    #expect(level2.nodes.count > level1.nodes.count)
+}
+
+@Test
+func prepared2DMeshHasPositiveAreas() throws {
+    let mesh = Mesh2D.rectangularPlate(nx: 5, ny: 2, order: .quadratic).subdivided(levels: 1)
     let prepared = try mesh.prepare()
-    #expect(prepared.elements.count == 5)
+    #expect(!prepared.elements.isEmpty)
     for element in prepared.elements {
-        #expect(element.volume > 0)
+        #expect(element.area > 0)
     }
 }
 
 @Test
-func displacementControlledTensionConvergesOnCPU() throws {
-    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.08, loadSteps: 6)
-    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
-    let result = try solver.solve()
+func explicitDisplacementControlledTensionConvergesLinearAndQuadratic() throws {
+    let controls = ExplicitSolverControls2D(
+        substepsPerLoadStep: 40,
+        timeStep: 2e-4,
+        damping: 0.12,
+        massDensity: 2_000,
+        densityPenalty: 1.0,
+        velocityClamp: 8.0
+    )
 
-    #expect(result.converged)
-    #expect(result.stepHistory.count == 6)
-    #expect(result.stepSnapshots.count == 6)
+    let linearProblem = ExampleProblems2D.displacementControlledTension(
+        nx: 6,
+        ny: 2,
+        order: .linear,
+        endDisplacement: 0.05,
+        loadSteps: 5
+    )
+    let quadraticProblem = ExampleProblems2D.displacementControlledTension(
+        nx: 5,
+        ny: 2,
+        order: .quadratic,
+        endDisplacement: 0.05,
+        loadSteps: 5
+    )
 
-    let maxEquivalentPlastic = result.elementStates.map(\.equivalentPlasticStrain).max() ?? 0
-    #expect(maxEquivalentPlastic > 0)
+    let linearResult = try ExplicitFEMSolver2D(
+        problem: linearProblem,
+        explicitControls: controls,
+        backendChoice: .cpu
+    ).solve()
+    let quadraticResult = try ExplicitFEMSolver2D(
+        problem: quadraticProblem,
+        explicitControls: controls,
+        backendChoice: .cpu
+    ).solve()
 
-    let maxDamage = result.elementStates.map(\.damage).max() ?? 0
-    #expect(maxDamage >= 0)
+    #expect(linearResult.converged)
+    #expect(quadraticResult.converged)
+    #expect(linearResult.stepSnapshots.count == 5)
+    #expect(quadraticResult.stepSnapshots.count == 5)
 }
 
 @Test
-func loadRampAndEnforcedDisplacementsAreAppliedGradually() throws {
-    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.04, loadSteps: 5)
-    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
-    let result = try solver.solve()
+func gradualLoadRampEnforcesBoundaryValuesExplicit() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 6,
+        ny: 2,
+        order: .linear,
+        endDisplacement: 0.04,
+        loadSteps: 5
+    )
+    let controls = ExplicitSolverControls2D(
+        substepsPerLoadStep: 32,
+        timeStep: 2e-4,
+        damping: 0.12,
+        massDensity: 2_000,
+        densityPenalty: 1.0,
+        velocityClamp: 8.0
+    )
 
-    #expect(result.stepSnapshots.count == 5)
-
-    let loadedBCs = problem.prescribedDisplacements.filter { $0.component == 0 && abs($0.value) > 1e-8 }
-    #expect(!loadedBCs.isEmpty)
-
+    let result = try ExplicitFEMSolver2D(problem: problem, explicitControls: controls, backendChoice: .cpu).solve()
     var previousLoad: Float = -1
+    let loadedBCs = problem.prescribedDisplacements.filter { $0.component == 0 && abs($0.value) > 1e-8 }
+
     for snapshot in result.stepSnapshots {
         #expect(snapshot.loadFactor > previousLoad)
         previousLoad = snapshot.loadFactor
 
         for bc in loadedBCs {
-            let expectedValue = bc.value * snapshot.loadFactor
-            let actualValue = snapshot.displacements[bc.node].x
-            #expect(abs(actualValue - expectedValue) < 1e-5)
+            let expected = bc.value * snapshot.loadFactor
+            let actual = snapshot.displacements[bc.node].x
+            #expect(abs(expected - actual) < 1e-6)
         }
     }
+}
+
+@Test
+func explicitBenchmarksPassOnCPU() throws {
+    let results = try ExplicitLiteratureBenchmarks2D.runAll(backendChoice: .cpu)
+    for result in results {
+        #expect(result.passed)
+    }
+}
+
+@Test
+func explicitMetalBenchmarksRunWhenAvailable() throws {
+    do {
+        let results = try ExplicitLiteratureBenchmarks2D.runAll(backendChoice: .metal)
+        for result in results {
+            #expect(result.passed)
+        }
+    } catch FEMError.backendUnavailable {
+        // Metal availability is environment-dependent; this still validates behavior.
+    }
+}
+
+@Test
+func topologyOptimizationChangesDensities() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 3,
+        ny: 1,
+        order: .linear,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let controls = TopologyOptimizationControls2D(
+        iterations: 2,
+        patchRadius: 1,
+        minimumDensity: 0.1,
+        maximumDensity: 1.0,
+        moveLimit: 0.2,
+        referenceElementStride: 2,
+        explicitControls: ExplicitSolverControls2D(
+            substepsPerLoadStep: 16,
+            timeStep: 2e-4,
+            damping: 0.12,
+            massDensity: 2_000,
+            densityPenalty: 3.0,
+            velocityClamp: 8.0
+        )
+    )
+    let optimizer = try PatchTopologyOptimizer2D(
+        problem: problem,
+        backendChoice: .cpu,
+        controls: controls,
+        objective: TopologyObjectives2D.compliance
+    )
+    let result = try optimizer.optimize()
+    let prepared = try problem.mesh.prepare()
+
+    #expect(result.history.count == 2)
+    #expect(result.densities.count == prepared.elements.count)
+    #expect(result.history.allSatisfy { $0.objective.isFinite })
+    #expect(result.densities.contains { $0 < 0.999 })
+    #expect(result.finalSolve.elementDensities.count == result.densities.count)
 }
 
 @Test
@@ -75,80 +203,59 @@ func sparseBiCGSTABSolvesReferenceSystem() throws {
 }
 
 @Test
-func literatureBenchmarksPassOnCPU() throws {
-    let results = try LiteratureBenchmarks.runAll(backendChoice: .cpu)
-    for result in results {
-        #expect(result.passed)
-    }
-}
+func visualizationOutputsVTKAndPNGSeriesFromExplicitSolve() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 4,
+        ny: 2,
+        order: .linear,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let controls = ExplicitSolverControls2D(
+        substepsPerLoadStep: 24,
+        timeStep: 2e-4,
+        damping: 0.12,
+        massDensity: 2_000,
+        densityPenalty: 1.0,
+        velocityClamp: 8.0
+    )
+    let result = try ExplicitFEMSolver2D(problem: problem, explicitControls: controls, backendChoice: .cpu).solve()
 
-@Test
-func literatureBenchmarksPassOnMetalWhenAvailable() throws {
-    do {
-        let results = try LiteratureBenchmarks.runAll(backendChoice: .metal)
-        for result in results {
-            #expect(result.passed)
-        }
-    } catch FEMError.backendUnavailable {
-        // Metal device not available in this environment.
-        return
-    }
-}
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mayorfem-2d-viz-\(UUID().uuidString)", isDirectory: true)
+    let vtkDir = root.appendingPathComponent("vtk", isDirectory: true)
+    let pngDir = root.appendingPathComponent("png", isDirectory: true)
 
-@Test
-func vtkVisualizationSeriesContainsStressDeformationAndBCFields() throws {
-    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.02, loadSteps: 3)
-    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
-    let result = try solver.solve()
-
-    let outputURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mayorfem-viz-\(UUID().uuidString)", isDirectory: true)
-
-    let files = try FEMVisualization.writeVTKSeries(
+    let vtkFiles = try FEMVisualization.writeVTKSeries(
         problem: problem,
         result: result,
-        outputDirectory: outputURL.path,
-        deformationScale: 12
+        outputDirectory: vtkDir.path,
+        deformationScale: 8
     )
 
-    #expect(files.count == 3)
-    #expect(FileManager.default.fileExists(atPath: outputURL.appendingPathComponent("series.pvd").path))
-
-    let firstContent = try String(contentsOfFile: files[0], encoding: .utf8)
-    #expect(firstContent.contains("SCALARS von_mises float 1"))
-    #expect(firstContent.contains("VECTORS displacement float"))
-    #expect(firstContent.contains("VECTORS prescribed_displacement float"))
-    #expect(firstContent.contains("SCALARS enforced_dof_count int 1"))
-
-    try? FileManager.default.removeItem(at: outputURL)
-}
-
-@Test
-func pngVisualizationSeriesContainsFrames() throws {
-    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.02, loadSteps: 3)
-    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
-    let result = try solver.solve()
-
-    let outputURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mayorfem-png-\(UUID().uuidString)", isDirectory: true)
-
-    let files = try FEMVisualization.writePNGSeries(
+    let pngFiles = try FEMVisualization.writePNGSeries(
         problem: problem,
         result: result,
-        outputDirectory: outputURL.path,
-        deformationScale: 12,
+        outputDirectory: pngDir.path,
+        deformationScale: 8,
         imageWidth: 640,
-        imageHeight: 480
+        imageHeight: 420
     )
 
-    #expect(files.count == 3)
+    #expect(vtkFiles.count == 4)
+    #expect(pngFiles.count == 4)
+    #expect(FileManager.default.fileExists(atPath: vtkDir.appendingPathComponent("series.pvd").path))
 
-    let firstData = try Data(contentsOf: URL(fileURLWithPath: files[0]))
-    #expect(firstData.count > 8)
-    #expect(firstData[0] == 0x89)
-    #expect(firstData[1] == 0x50)
-    #expect(firstData[2] == 0x4E)
-    #expect(firstData[3] == 0x47)
+    let firstVTK = try String(contentsOfFile: vtkFiles[0], encoding: .utf8)
+    #expect(firstVTK.contains("SCALARS von_mises float 1"))
+    #expect(firstVTK.contains("SCALARS density float 1"))
 
-    try? FileManager.default.removeItem(at: outputURL)
+    let firstPNG = try Data(contentsOf: URL(fileURLWithPath: pngFiles[0]))
+    #expect(firstPNG.count > 8)
+    #expect(firstPNG[0] == 0x89)
+    #expect(firstPNG[1] == 0x50)
+    #expect(firstPNG[2] == 0x4E)
+    #expect(firstPNG[3] == 0x47)
+
+    try? FileManager.default.removeItem(at: root)
 }

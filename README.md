@@ -1,58 +1,96 @@
 # opt3
 
-MayorFEM is a clean-slate nonlinear finite element prototype for macOS with a Metal element kernel and CPU fallback.
+MayorFEM is a 2D nonlinear finite element prototype focused on small-model speed and reliability for laptop workflows.
 
 ## Current Capabilities
 
-- Nonlinear geometry via finite deformation gradient (`F`) in each tetrahedron.
-- Nonlinear material with J2 (von Mises) return mapping and isotropic hardening.
-- Simple ductility damage variable that softens stress as equivalent plastic strain accumulates.
-- Enforced displacements (Dirichlet boundary conditions) with displacement-controlled load stepping.
-- Newton solve with sparse global assembly and BiCGSTAB iterative linear solves.
-- Element-level consistent tangent linearization (local directional derivatives through constitutive update).
-- Metal backend for element residual/state evaluation; CPU backend remains available as fallback.
-- Literature-style regression benchmark suite for yield transition and translation invariance checks.
-- Stepwise load ramp snapshots for gradual loading analysis.
-- Visualization export to VTK (`.vtk` + `series.pvd`) and PNG frame series including stress, exaggerated deformation, and enforced displacement fields.
+- 2D nonlinear geometry (finite deformation kinematics in plane strain embedding).
+- Nonlinear material with J2 (von Mises) plasticity, isotropic hardening, and ductile damage softening.
+- Enforced displacements with gradual load stepping (displacement-control ramp).
+- Explicit nonlinear solver path tuned for small-model robustness.
+- CPU and Metal backends for the explicit element loop (`auto` selects Metal when available).
+- Implicit Newton path retained for comparison/debugging.
+- Triangular element workflow:
+  - Linear triangles (`tri3`)
+  - Quadratic triangles (`tri6`) represented and solved through consistent sub-triangulation
+- Uniform mesh subdivision (`--subdivide`) for refinement studies.
+- Patch-based topology optimization:
+  - Density design variables per element
+  - Reference element toggled on/off in local patches
+  - Arbitrary patch objective callback API
+  - Compliance objective provided out of the box
+- Visualization export per load step:
+  - VTK series (`.vtk` + `series.pvd`)
+  - PNG frame series
+  - Includes stress, exaggerated deformation, and enforced displacement overlays.
 
-## Run
+## Run (Explicit)
 
 ```bash
-swift run mayor-fem --steps 12 --disp 0.08 --backend auto
+swift run mayor-fem --solver explicit --steps 12 --disp 0.08 --nx 12 --ny 4 --order linear
 ```
 
-Arguments:
+Key arguments:
 
-- `--steps N` number of load steps
-- `--disp value` end displacement on loaded face (x direction)
-- `--backend auto|metal|cpu`
-- `--steps N` controls gradual load increase from 0 to full prescribed displacement
-- `--visualize <dir>` exports VTK and PNG series to `<dir>/vtk` and `<dir>/png`
-- `--deformation-scale value` sets visual exaggeration for deformation
-- `--image-width W` and `--image-height H` set PNG frame size
+- `--solver explicit|implicit`
+- `--steps N` number of load increments
+- `--disp value` final prescribed displacement on loaded edge
+- `--backend auto|cpu|metal`
+- `--nx N`, `--ny N` base rectangular mesh divisions
+- `--order linear|quadratic` element order
+- `--subdivide L` uniform refinement levels (each level multiplies triangle count by 4)
+- Explicit controls:
+  - `--explicit-substeps N`
+  - `--relax-iters N`
+  - `--dt value`
+  - `--damping value`
+  - `--mass-density value`
+  - `--density-penalty value`
 
 ### Visualization Export
 
 ```bash
-swift run mayor-fem --steps 12 --disp 0.08 \
-  --visualize out/viz --deformation-scale 10 \
-  --image-width 1600 --image-height 1000 --backend auto
+swift run mayor-fem \
+  --solver explicit --steps 12 --disp 0.08 --order quadratic --subdivide 1 \
+  --visualize out/viz2d --deformation-scale 10 \
+  --image-width 1600 --image-height 1000
 ```
 
 This writes:
 
-- VTK files per converged load step plus `series.pvd` in `out/viz/vtk` (for ParaView time-series loading)
-- PNG frames in `out/viz/png` (for quick visual inspection or video stitching)
+- `out/viz2d/vtk/step_XXXX.vtk` + `out/viz2d/vtk/series.pvd`
+- `out/viz2d/png/step_XXXX.png`
+- `out/viz2d/densities.csv`
 
 Included fields:
 
-- Cell data: `von_mises`, `eq_plastic_strain`, `damage`, `load_factor`
+- Cell data: `von_mises`, `eq_plastic_strain`, `damage`, `load_factor`, `density`
 - Point data: `displacement`, `prescribed_displacement`, `enforced_dof_count`, `prescribed_node`
 
-Run benchmark suite:
+### Benchmarks (Literature-Anchored)
 
 ```bash
-swift run mayor-fem --benchmarks --backend cpu
+swift run mayor-fem --benchmarks --solver explicit --backend cpu
+```
+
+Current benchmark checks include:
+
+- Below-yield elastic response (Simo/Hughes-style anchor)
+- Above-yield plastic response (Belytschko-style loading path)
+- Subdivision consistency
+- Translational invariance (Bonet/Wood-style patch anchor)
+
+### Topology Optimization
+
+```bash
+swift run mayor-fem \
+  --topopt --solver explicit --backend metal \
+  --steps 8 --disp 0.05 --nx 6 --ny 2 \
+  --topopt-iters 8 --patch-radius 1 \
+  --min-density 0.05 --max-density 1.0 \
+  --move-limit 0.12 --reference-stride 1 \
+  --objective compliance \
+  --visualize out/topopt
 ```
 
 ## Tests
@@ -68,5 +106,3 @@ This implementation follows standard building blocks from nonlinear solid mechan
 - Belytschko, Liu, Moran, and Elkhodary, *Nonlinear Finite Elements for Continua and Structures*.
 - Simo and Hughes, *Computational Inelasticity*.
 - Bonet and Wood, *Nonlinear Continuum Mechanics for Finite Element Analysis*.
-
-The current code is tuned for small-model reliability and speed on laptop-scale runs; next steps are larger benchmark coverage and more element/integration variants.

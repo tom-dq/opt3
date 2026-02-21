@@ -143,3 +143,127 @@ kernel void elementResidualKernel(
     outTrialStates[id].equivalentPlasticStrain = equivalentPlasticStrain;
     outTrialStates[id].damage = damage;
 }
+
+inline float2x2 outerProduct2(float2 a, float2 b) {
+    return float2x2(a * b.x, a * b.y);
+}
+
+inline float2 mul2x2(float2 c0, float2 c1, float2 v) {
+    return c0 * v.x + c1 * v.y;
+}
+
+kernel void elementResidualKernel2D(
+    device const float2* referencePositions [[buffer(0)]],
+    device const float2* displacements [[buffer(1)]],
+    device const uint* nodeIDs [[buffer(2)]],
+    device const float2* gradients [[buffer(3)]],
+    device const float* areas [[buffer(4)]],
+    constant MaterialConstants& material [[buffer(5)]],
+    constant float& thickness [[buffer(6)]],
+    device const ElementState* previousStates [[buffer(7)]],
+    device const float* densities [[buffer(8)]],
+    constant float& densityPenalty [[buffer(9)]],
+    constant float& minimumDensity [[buffer(10)]],
+    device float2* outElementNodeForces [[buffer(11)]],
+    device ElementState* outTrialStates [[buffer(12)]],
+    device float* outVonMises [[buffer(13)]],
+    device float* outStrainEnergy [[buffer(14)]],
+    constant uint& elementCount [[buffer(15)]],
+    uint id [[thread_position_in_grid]]
+) {
+    if (id >= elementCount) {
+        return;
+    }
+
+    uint base = id * 3;
+    uint i0 = nodeIDs[base + 0];
+    uint i1 = nodeIDs[base + 1];
+    uint i2 = nodeIDs[base + 2];
+
+    float2 g0 = gradients[base + 0];
+    float2 g1 = gradients[base + 1];
+    float2 g2 = gradients[base + 2];
+
+    float2 x0 = referencePositions[i0] + displacements[i0];
+    float2 x1 = referencePositions[i1] + displacements[i1];
+    float2 x2 = referencePositions[i2] + displacements[i2];
+
+    float2x2 F2 = outerProduct2(x0, g0) +
+                  outerProduct2(x1, g1) +
+                  outerProduct2(x2, g2);
+
+    float detF2 = determinant(F2);
+    float2x2 identity2 = float2x2(float2(1.0f, 0.0f), float2(0.0f, 1.0f));
+    if (detF2 < material.regularization) {
+        F2 += (material.regularization - detF2) * identity2;
+        detF2 = determinant(F2);
+    }
+    detF2 = max(detF2, material.regularization);
+
+    float3x3 F = float3x3(
+        float3(F2[0].x, F2[0].y, 0.0f),
+        float3(F2[1].x, F2[1].y, 0.0f),
+        float3(0.0f, 0.0f, 1.0f)
+    );
+
+    float3x3 identity = float3x3(float3(1, 0, 0), float3(0, 1, 0), float3(0, 0, 1));
+    float3x3 b = F * transpose(F);
+    float3x3 tauTrial = material.mu * (b - identity) + material.lambda * log(detF2) * identity;
+
+    float meanStress = trace33(tauTrial) / 3.0f;
+    float3x3 deviatoric = tauTrial - meanStress * identity;
+
+    float qTrial = sqrt(max(1e-12f, 1.5f * doubleContraction(deviatoric)));
+    ElementState previousState = previousStates[id];
+    float flowStress = material.yieldStress + material.hardeningModulus * previousState.equivalentPlasticStrain;
+
+    float equivalentPlasticStrain = previousState.equivalentPlasticStrain;
+    if (qTrial > flowStress) {
+        float deltaGamma = (qTrial - flowStress) / (3.0f * material.mu + material.hardeningModulus + 1e-6f);
+        float scale = max(0.0f, 1.0f - ((3.0f * material.mu * deltaGamma) / (qTrial + 1e-8f)));
+        deviatoric *= scale;
+        equivalentPlasticStrain += 0.816496580927726f * deltaGamma;
+    }
+
+    float damage = previousState.damage;
+    if (equivalentPlasticStrain > material.damageOnset) {
+        float threshold = max(previousState.equivalentPlasticStrain, material.damageOnset);
+        float deltaEquivalentPlastic = max(0.0f, equivalentPlasticStrain - threshold);
+        float deltaDamage = deltaEquivalentPlastic / max(material.damageSlope, 1e-6f);
+        damage = min(material.damageCap, previousState.damage + deltaDamage);
+    }
+
+    float density = clamp(densities[id], minimumDensity, 1.0f);
+    float densityScale = pow(density, max(1.0f, densityPenalty));
+    float softening = max(0.0f, 1.0f - damage);
+    float3x3 tau = densityScale * softening * (deviatoric + meanStress * identity);
+    float3x3 deviatoricKirchhoff = densityScale * softening * deviatoric;
+    float vonMises = sqrt(max(0.0f, 1.5f * doubleContraction(deviatoricKirchhoff)));
+
+    float3x3 inverseTransposeF = inverseTranspose3x3(F);
+    float3x3 firstPiola = tau * inverseTransposeF;
+    float2 p0 = float2(firstPiola[0].x, firstPiola[0].y);
+    float2 p1 = float2(firstPiola[1].x, firstPiola[1].y);
+
+    float scale = thickness * areas[id];
+    float2 f0 = scale * mul2x2(p0, p1, g0);
+    float2 f1 = scale * mul2x2(p0, p1, g1);
+    float2 f2 = scale * mul2x2(p0, p1, g2);
+
+    outElementNodeForces[base + 0] = f0;
+    outElementNodeForces[base + 1] = f1;
+    outElementNodeForces[base + 2] = f2;
+
+    outTrialStates[id].equivalentPlasticStrain =
+        previousState.equivalentPlasticStrain + densityScale * (equivalentPlasticStrain - previousState.equivalentPlasticStrain);
+    outTrialStates[id].damage =
+        previousState.damage + densityScale * (damage - previousState.damage);
+
+    outVonMises[id] = vonMises;
+
+    float2 u0 = displacements[i0];
+    float2 u1 = displacements[i1];
+    float2 u2 = displacements[i2];
+    float strainEnergy = 0.5f * (dot(f0, u0) + dot(f1, u1) + dot(f2, u2));
+    outStrainEnergy[id] = fabs(strainEnergy);
+}
