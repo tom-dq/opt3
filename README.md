@@ -13,7 +13,7 @@ MayorFEM is a clean-slate nonlinear finite element prototype for macOS with a Me
 - Metal backend for element residual/state evaluation; CPU backend remains available as fallback.
 - Literature-style regression benchmark suite for yield transition and translation invariance checks.
 - Stepwise load ramp snapshots for gradual loading analysis.
-- Visualization export to VTK (`.vtk` + `series.pvd`) including stress, exaggerated deformation, and enforced displacement fields.
+- Visualization export to VTK (`.vtk` + `series.pvd`) and PNG frame series including stress, exaggerated deformation, and enforced displacement fields.
 
 ## Run
 
@@ -27,15 +27,22 @@ Arguments:
 - `--disp value` end displacement on loaded face (x direction)
 - `--backend auto|metal|cpu`
 - `--steps N` controls gradual load increase from 0 to full prescribed displacement
+- `--visualize <dir>` exports VTK and PNG series to `<dir>/vtk` and `<dir>/png`
+- `--deformation-scale value` sets visual exaggeration for deformation
+- `--image-width W` and `--image-height H` set PNG frame size
 
 ### Visualization Export
 
 ```bash
 swift run mayor-fem --steps 12 --disp 0.08 \
-  --visualize out/vtk --deformation-scale 10 --backend auto
+  --visualize out/viz --deformation-scale 10 \
+  --image-width 1600 --image-height 1000 --backend auto
 ```
 
-This writes one VTK file per converged load step plus `series.pvd` for ParaView time-series loading.
+This writes:
+
+- VTK files per converged load step plus `series.pvd` in `out/viz/vtk` (for ParaView time-series loading)
+- PNG frames in `out/viz/png` (for quick visual inspection or video stitching)
 
 Included fields:
 

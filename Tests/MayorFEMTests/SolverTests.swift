@@ -122,3 +122,33 @@ func vtkVisualizationSeriesContainsStressDeformationAndBCFields() throws {
 
     try? FileManager.default.removeItem(at: outputURL)
 }
+
+@Test
+func pngVisualizationSeriesContainsFrames() throws {
+    let problem = ExampleProblems.displacementControlledTension(endDisplacement: 0.02, loadSteps: 3)
+    let solver = try NonlinearFEMSolver(problem: problem, backendChoice: .cpu)
+    let result = try solver.solve()
+
+    let outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mayorfem-png-\(UUID().uuidString)", isDirectory: true)
+
+    let files = try FEMVisualization.writePNGSeries(
+        problem: problem,
+        result: result,
+        outputDirectory: outputURL.path,
+        deformationScale: 12,
+        imageWidth: 640,
+        imageHeight: 480
+    )
+
+    #expect(files.count == 3)
+
+    let firstData = try Data(contentsOf: URL(fileURLWithPath: files[0]))
+    #expect(firstData.count > 8)
+    #expect(firstData[0] == 0x89)
+    #expect(firstData[1] == 0x50)
+    #expect(firstData[2] == 0x4E)
+    #expect(firstData[3] == 0x47)
+
+    try? FileManager.default.removeItem(at: outputURL)
+}

@@ -8,6 +8,8 @@ private struct CLIOptions {
     var runBenchmarks: Bool = false
     var visualizationDirectory: String?
     var deformationScale: Float = 8.0
+    var imageWidth: Int = 1400
+    var imageHeight: Int = 900
 
     static func parse(arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -57,6 +59,18 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--deformation-scale requires a positive floating point value")
                 }
                 options.deformationScale = value
+            case "--image-width":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 256 else {
+                    throw FEMError.invalidBoundaryCondition("--image-width requires an integer >= 256")
+                }
+                options.imageWidth = value
+            case "--image-height":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 256 else {
+                    throw FEMError.invalidBoundaryCondition("--image-height requires an integer >= 256")
+                }
+                options.imageHeight = value
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -76,11 +90,12 @@ private struct CLIOptions {
         Usage:
           swift run mayor-fem [--steps N] [--disp value] [--backend auto|metal|cpu] [--benchmarks]
                               [--visualize output-dir] [--deformation-scale value]
+                              [--image-width W] [--image-height H]
 
         Example:
           swift run mayor-fem --steps 12 --disp 0.08 --backend auto
           swift run mayor-fem --benchmarks --backend cpu
-          swift run mayor-fem --steps 12 --visualize out/vtk --deformation-scale 10
+          swift run mayor-fem --steps 12 --visualize out/viz --deformation-scale 10
         """)
     }
 }
@@ -148,13 +163,28 @@ do {
     print(String(format: "Support reaction (x, fixed face sum): %.5f", supportReaction))
 
     if let visualizationDirectory = options.visualizationDirectory {
-        let files = try FEMVisualization.writeVTKSeries(
+        let vtkDirectory = URL(fileURLWithPath: visualizationDirectory, isDirectory: true)
+            .appendingPathComponent("vtk")
+        let pngDirectory = URL(fileURLWithPath: visualizationDirectory, isDirectory: true)
+            .appendingPathComponent("png")
+
+        let vtkFiles = try FEMVisualization.writeVTKSeries(
             problem: problem,
             result: result,
-            outputDirectory: visualizationDirectory,
+            outputDirectory: vtkDirectory.path,
             deformationScale: options.deformationScale
         )
-        print("Visualization files written: \(files.count)")
+        let pngFiles = try FEMVisualization.writePNGSeries(
+            problem: problem,
+            result: result,
+            outputDirectory: pngDirectory.path,
+            deformationScale: options.deformationScale,
+            imageWidth: options.imageWidth,
+            imageHeight: options.imageHeight
+        )
+
+        print("Visualization VTK files written: \(vtkFiles.count)")
+        print("Visualization PNG files written: \(pngFiles.count)")
         print("Visualization directory: \(visualizationDirectory)")
     }
 } catch {
