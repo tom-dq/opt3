@@ -5,6 +5,7 @@ private struct CLIOptions {
     var steps: Int = 10
     var displacement: Float = 0.08
     var backend: ComputeBackendChoice = .auto
+    var runBenchmarks: Bool = false
 
     static func parse(arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -40,6 +41,8 @@ private struct CLIOptions {
                 default:
                     throw FEMError.invalidBoundaryCondition("--backend requires one of auto|metal|cpu")
                 }
+            case "--benchmarks":
+                options.runBenchmarks = true
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -57,10 +60,11 @@ private struct CLIOptions {
         mayor-fem
 
         Usage:
-          swift run mayor-fem [--steps N] [--disp value] [--backend auto|metal|cpu]
+          swift run mayor-fem [--steps N] [--disp value] [--backend auto|metal|cpu] [--benchmarks]
 
         Example:
           swift run mayor-fem --steps 12 --disp 0.08 --backend auto
+          swift run mayor-fem --benchmarks --backend cpu
         """)
     }
 }
@@ -77,6 +81,26 @@ func sumXReactionsOnFixedFace(problem: FEMProblem, reactions: [Float]) -> Float 
 
 do {
     let options = try CLIOptions.parse(arguments: CommandLine.arguments)
+
+    if options.runBenchmarks {
+        let results = try LiteratureBenchmarks.runAll(backendChoice: options.backend)
+        print("Benchmark suite:")
+
+        var allPassed = true
+        for result in results {
+            let label = result.passed ? "PASS" : "FAIL"
+            print("  [\(label)] \(result.name)")
+            print("         \(result.detail)")
+            allPassed = allPassed && result.passed
+        }
+
+        if !allPassed {
+            exit(2)
+        }
+
+        exit(0)
+    }
+
     let problem = ExampleProblems.displacementControlledTension(
         endDisplacement: options.displacement,
         loadSteps: options.steps

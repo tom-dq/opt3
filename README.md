@@ -8,8 +8,10 @@ MayorFEM is a clean-slate nonlinear finite element prototype for macOS with a Me
 - Nonlinear material with J2 (von Mises) return mapping and isotropic hardening.
 - Simple ductility damage variable that softens stress as equivalent plastic strain accumulates.
 - Enforced displacements (Dirichlet boundary conditions) with displacement-controlled load stepping.
-- Newton solve with finite-difference Jacobian for robust small-model convergence.
+- Newton solve with sparse global assembly and BiCGSTAB iterative linear solves.
+- Element-level consistent tangent linearization (local directional derivatives through constitutive update).
 - Metal backend for element residual/state evaluation; CPU backend remains available as fallback.
+- Literature-style regression benchmark suite for yield transition and translation invariance checks.
 
 ## Run
 
@@ -22,6 +24,12 @@ Arguments:
 - `--steps N` number of load steps
 - `--disp value` end displacement on loaded face (x direction)
 - `--backend auto|metal|cpu`
+
+Run benchmark suite:
+
+```bash
+swift run mayor-fem --benchmarks --backend cpu
+```
 
 ## Tests
 
@@ -37,4 +45,4 @@ This implementation follows standard building blocks from nonlinear solid mechan
 - Simo and Hughes, *Computational Inelasticity*.
 - Bonet and Wood, *Nonlinear Continuum Mechanics for Finite Element Analysis*.
 
-The current code is a pragmatic prototype for small models; next steps for production-grade use are consistent tangents, sparse global assembly/solvers, and broader element/integration support.
+The current code is tuned for small-model reliability and speed on laptop-scale runs; next steps are larger benchmark coverage and more element/integration variants.

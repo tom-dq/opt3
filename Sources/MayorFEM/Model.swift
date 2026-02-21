@@ -93,19 +93,25 @@ public struct SolverControls {
     public var residualTolerance: Float
     public var finiteDifferenceStep: Float
     public var lineSearchFloor: Float
+    public var linearSolverTolerance: Float
+    public var linearSolverMaxIterations: Int
 
     public init(
         loadSteps: Int = 12,
         maxNewtonIterations: Int = 20,
         residualTolerance: Float = 1e-4,
         finiteDifferenceStep: Float = 1e-4,
-        lineSearchFloor: Float = 1.0 / 128.0
+        lineSearchFloor: Float = 1.0 / 128.0,
+        linearSolverTolerance: Float = 1e-6,
+        linearSolverMaxIterations: Int = 400
     ) {
         self.loadSteps = loadSteps
         self.maxNewtonIterations = maxNewtonIterations
         self.residualTolerance = residualTolerance
         self.finiteDifferenceStep = finiteDifferenceStep
         self.lineSearchFloor = lineSearchFloor
+        self.linearSolverTolerance = linearSolverTolerance
+        self.linearSolverMaxIterations = linearSolverMaxIterations
     }
 }
 

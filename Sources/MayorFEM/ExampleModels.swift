@@ -35,7 +35,9 @@ public enum ExampleProblems {
             maxNewtonIterations: 30,
             residualTolerance: 1e-3,
             finiteDifferenceStep: 2e-4,
-            lineSearchFloor: 1.0 / 128.0
+            lineSearchFloor: 1.0 / 128.0,
+            linearSolverTolerance: 1e-5,
+            linearSolverMaxIterations: 600
         )
 
         return FEMProblem(

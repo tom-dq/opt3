@@ -10,15 +10,18 @@ public final class NonlinearFEMSolver {
     private let problem: FEMProblem
     private let preparedMesh: PreparedMesh
     private let evaluator: ElementEvaluator
+    private let linearizer: CPUElementLinearizer
     private let backendName: String
     private let dofCount: Int
     private let freeDOFs: [Int]
+    private let freeDOFToReducedIndex: [Int]
     private let prescribedFinalValues: [Int: Float]
 
     public init(problem: FEMProblem, backendChoice: ComputeBackendChoice = .auto) throws {
         self.problem = problem
         self.preparedMesh = try problem.mesh.prepare()
         self.dofCount = preparedMesh.nodes.count * 3
+        self.linearizer = CPUElementLinearizer(preparedMesh: preparedMesh, material: problem.material)
 
         let prescribedFinalValues = try NonlinearFEMSolver.buildPrescribedMap(
             prescribedDisplacements: problem.prescribedDisplacements,
@@ -32,6 +35,12 @@ public final class NonlinearFEMSolver {
         if freeDOFs.isEmpty {
             throw FEMError.noFreeDOFs
         }
+
+        var freeDOFToReducedIndex = Array(repeating: -1, count: dofCount)
+        for (reduced, global) in freeDOFs.enumerated() {
+            freeDOFToReducedIndex[global] = reduced
+        }
+        self.freeDOFToReducedIndex = freeDOFToReducedIndex
 
         switch backendChoice {
         case .cpu:
@@ -80,14 +89,20 @@ public final class NonlinearFEMSolver {
                     break
                 }
 
-                let jacobian = try buildNumericalJacobian(
-                    dofs: dofs,
-                    baseResidual: evaluation.residual,
-                    prescribedAtStep: prescribedAtStep,
-                    previousStates: baseStates
-                )
+                let tangent = assembleSparseTangent(dofs: dofs, previousStates: baseStates)
                 let rhs = freeDOFs.map { -evaluation.residual[$0] }
-                let increment = try solveDenseLinearSystem(coefficients: jacobian, rhs: rhs)
+                let increment: [Float]
+                do {
+                    increment = try solveSparseBiCGSTAB(
+                        matrix: tangent,
+                        rhs: rhs,
+                        tolerance: problem.controls.linearSolverTolerance,
+                        maxIterations: problem.controls.linearSolverMaxIterations
+                    )
+                } catch {
+                    // Robust fallback for pathological tangent states on very small systems.
+                    increment = try solveDenseLinearSystem(coefficients: tangent.toDenseArray(), rhs: rhs)
+                }
 
                 var accepted = false
                 var alpha: Float = 1.0
@@ -174,32 +189,56 @@ public final class NonlinearFEMSolver {
         return GlobalEvaluation(residual: residual, trialStates: elementEvaluation.trialStates)
     }
 
-    private func buildNumericalJacobian(
-        dofs: [Float],
-        baseResidual: [Float],
-        prescribedAtStep: [Int: Float],
-        previousStates: [ElementState]
-    ) throws -> [Float] {
-        let dimension = freeDOFs.count
-        var jacobian = Array(repeating: Float(0), count: dimension * dimension)
+    private func assembleSparseTangent(dofs: [Float], previousStates: [ElementState]) -> SparseMatrix {
+        let nodalDisplacements = dofVectorToNodalDisplacements(dofs, nodeCount: preparedMesh.nodes.count)
+        var builder = SparseMatrixBuilder(
+            dimension: freeDOFs.count,
+            reserve: preparedMesh.elements.count * 12 * 12
+        )
 
-        for column in 0..<dimension {
-            let dofIndex = freeDOFs[column]
-            var perturbed = dofs
-            let perturbation = problem.controls.finiteDifferenceStep * max(1, abs(dofs[dofIndex]))
-            perturbed[dofIndex] += perturbation
-            applyPrescribedValues(&perturbed, prescribed: prescribedAtStep)
+        for elementIndex in preparedMesh.elements.indices {
+            let linearization = linearizer.linearize(
+                elementIndex: elementIndex,
+                displacements: nodalDisplacements,
+                previousState: previousStates[elementIndex],
+                finiteDifferenceStep: problem.controls.finiteDifferenceStep
+            )
 
-            let perturbedResidual = try evaluateGlobal(dofs: perturbed, previousStates: previousStates).residual
+            let localDOFs = localDOFIndices(for: linearization.nodeIDs)
 
-            for row in 0..<dimension {
-                let residualIndex = freeDOFs[row]
-                jacobian[row * dimension + column] =
-                    (perturbedResidual[residualIndex] - baseResidual[residualIndex]) / perturbation
+            for localRow in 0..<12 {
+                let reducedRow = freeDOFToReducedIndex[localDOFs[localRow]]
+                if reducedRow < 0 {
+                    continue
+                }
+
+                for localColumn in 0..<12 {
+                    let reducedColumn = freeDOFToReducedIndex[localDOFs[localColumn]]
+                    if reducedColumn < 0 {
+                        continue
+                    }
+
+                    let value = linearization.localTangent[localRow * 12 + localColumn]
+                    builder.add(row: reducedRow, column: reducedColumn, value: value)
+                }
             }
         }
 
-        return jacobian
+        return builder.build()
+    }
+
+    private func localDOFIndices(for nodeIDs: SIMD4<UInt32>) -> [Int] {
+        let n0 = Int(nodeIDs[0])
+        let n1 = Int(nodeIDs[1])
+        let n2 = Int(nodeIDs[2])
+        let n3 = Int(nodeIDs[3])
+
+        return [
+            n0 * 3, n0 * 3 + 1, n0 * 3 + 2,
+            n1 * 3, n1 * 3 + 1, n1 * 3 + 2,
+            n2 * 3, n2 * 3 + 1, n2 * 3 + 2,
+            n3 * 3, n3 * 3 + 1, n3 * 3 + 2,
+        ]
     }
 
     private func prescribedValues(for loadFactor: Float) -> [Int: Float] {
