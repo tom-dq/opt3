@@ -7,6 +7,16 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 out/
+/output/
+/outputs/
+/results/
+**/density_history/
+**/topopt_iterations/
+**/densities.csv
+**/topopt_history.csv
+**/series.pvd
+**/step_*.vtk
+**/step_*.png
 
 # Local machine/session files
 .claude/
