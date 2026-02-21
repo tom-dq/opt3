@@ -77,16 +77,16 @@ public enum ExplicitLiteratureBenchmarks2D {
         backendChoice: ComputeBackendChoice = .cpu
     ) throws -> BenchmarkResult2D {
         let coarse = ExampleProblems2D.displacementControlledTension(
-            nx: 5,
-            ny: 2,
+            nx: 8,
+            ny: 3,
             order: .linear,
             subdivisionLevels: 0,
             endDisplacement: 0.03,
             loadSteps: 8
         )
         let refined = ExampleProblems2D.displacementControlledTension(
-            nx: 5,
-            ny: 2,
+            nx: 8,
+            ny: 3,
             order: .linear,
             subdivisionLevels: 1,
             endDisplacement: 0.03,
@@ -109,7 +109,7 @@ public enum ExplicitLiteratureBenchmarks2D {
         let coarseReaction = fixedFaceReaction(problem: coarse, reactions: coarseResult.reactions)
         let refinedReaction = fixedFaceReaction(problem: refined, reactions: refinedResult.reactions)
         let relativeDifference = abs(coarseReaction - refinedReaction) / max(1.0, abs(refinedReaction))
-        let tolerance: Float = 0.25
+        let tolerance: Float = 0.20
 
         return BenchmarkResult2D(
             name: "Explicit 2D subdivision consistency (mesh refinement trend)",

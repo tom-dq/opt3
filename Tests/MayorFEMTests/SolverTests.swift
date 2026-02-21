@@ -7,17 +7,17 @@ func linearAndQuadraticMeshConstructionWorks() throws {
     let linear = Mesh2D.rectangularPlate(nx: 4, ny: 2, order: .linear)
     let quadratic = Mesh2D.rectangularPlate(nx: 4, ny: 2, order: .quadratic)
 
-    #expect(linear.elements.count == 16)
-    #expect(quadratic.elements.count == 16)
+    #expect(linear.elements.count == 8)
+    #expect(quadratic.elements.count == 32)
     #expect(quadratic.nodes.count > linear.nodes.count)
 
     #expect(linear.elements.allSatisfy {
-        if case .tri3 = $0 { return true }
+        if case .quad4 = $0 { return true }
         return false
     })
 
     #expect(quadratic.elements.allSatisfy {
-        if case .tri6 = $0 { return true }
+        if case .quad4 = $0 { return true }
         return false
     })
 }
@@ -203,7 +203,7 @@ func topologyOptimizationRespectsTargetVolumeFraction() throws {
         patchRadius: 1,
         minimumDensity: 0.1,
         maximumDensity: 1.0,
-        targetVolumeFraction: targetVolume,
+        targetVolumeFractionEnd: targetVolume,
         moveLimit: 0.15,
         referenceElementStride: 2,
         objectiveTolerance: 0,
@@ -383,6 +383,9 @@ func visualizationOutputsVTKAndPNGSeriesFromExplicitSolve() throws {
     #expect(FileManager.default.fileExists(atPath: vtkDir.appendingPathComponent("series.pvd").path))
 
     let firstVTK = try String(contentsOfFile: vtkFiles[0], encoding: .utf8)
+    #expect(firstVTK.contains("CELLS 8 40"))
+    #expect(firstVTK.contains("CELL_TYPES 8"))
+    #expect(firstVTK.contains("\n9\n"))
     #expect(firstVTK.contains("SCALARS von_mises float 1"))
     #expect(firstVTK.contains("SCALARS density float 1"))
 

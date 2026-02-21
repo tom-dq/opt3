@@ -85,6 +85,23 @@ extension FEMVisualization {
             stressMax = 1
         }
 
+        let elementCount = preparedMesh.elements.count
+        var densityMin = Float.greatestFiniteMagnitude
+        var densityMax = -Float.greatestFiniteMagnitude
+        for snapshot in snapshots {
+            let densities = snapshot.elementDensities.count == elementCount
+                ? snapshot.elementDensities
+                : Array(repeating: Float(1), count: elementCount)
+            if let localMin = densities.min(), let localMax = densities.max() {
+                densityMin = min(densityMin, localMin)
+                densityMax = max(densityMax, localMax)
+            }
+        }
+        if !densityMin.isFinite || !densityMax.isFinite || densityMax < densityMin {
+            densityMin = 0
+            densityMax = 1
+        }
+
         var files: [String] = []
         files.reserveCapacity(snapshots.count)
 
@@ -96,6 +113,7 @@ extension FEMVisualization {
                 preparedMesh: preparedMesh,
                 snapshot: snapshot,
                 stressRange: (stressMin, stressMax),
+                densityRange: (densityMin, densityMax),
                 deformationScale: deformationScale,
                 imageWidth: imageWidth,
                 imageHeight: imageHeight,
@@ -131,14 +149,14 @@ private func vtkContent2D(
         lines.append("\(p.x) \(p.y) 0")
     }
 
-    lines.append("CELLS \(elementCount) \(elementCount * 4)")
+    lines.append("CELLS \(elementCount) \(elementCount * 5)")
     for element in preparedMesh.elements {
-        lines.append("3 \(Int(element.nodeIDs[0])) \(Int(element.nodeIDs[1])) \(Int(element.nodeIDs[2]))")
+        lines.append("4 \(Int(element.nodeIDs[0])) \(Int(element.nodeIDs[1])) \(Int(element.nodeIDs[2])) \(Int(element.nodeIDs[3]))")
     }
 
     lines.append("CELL_TYPES \(elementCount)")
     for _ in 0..<elementCount {
-        lines.append("5")
+        lines.append("9")
     }
 
     lines.append("POINT_DATA \(nodeCount)")
@@ -247,6 +265,7 @@ private func writePNGFrame2D(
     preparedMesh: PreparedMesh2D,
     snapshot: StepSnapshot2D,
     stressRange: (Float, Float),
+    densityRange: (Float, Float),
     deformationScale: Float,
     imageWidth: Int,
     imageHeight: Int,
@@ -258,7 +277,28 @@ private func writePNGFrame2D(
         deformationScale: deformationScale
     )
 
-    let frame = frameTransform2D(points: points, imageWidth: imageWidth, imageHeight: imageHeight)
+    let imageWidthF = Float(imageWidth)
+    let imageHeightF = Float(imageHeight)
+    let outerMargin: Float = 22
+    let panelGap: Float = 20
+    let panelWidth = max(1, 0.5 * (imageWidthF - 2 * outerMargin - panelGap))
+    let panelHeight = max(1, imageHeightF - 2 * outerMargin)
+
+    let stressViewport = Viewport2D(
+        x: outerMargin,
+        y: outerMargin,
+        width: panelWidth,
+        height: panelHeight
+    )
+    let densityViewport = Viewport2D(
+        x: outerMargin + panelWidth + panelGap,
+        y: outerMargin,
+        width: panelWidth,
+        height: panelHeight
+    )
+
+    let stressFrame = frameTransform2D(points: points, imageHeight: imageHeight, viewport: stressViewport)
+    let densityFrame = frameTransform2D(points: points, imageHeight: imageHeight, viewport: densityViewport)
 
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     guard let context = CGContext(
@@ -276,20 +316,44 @@ private func writePNGFrame2D(
     context.setFillColor(CGColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 1))
     context.fill(CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight))
 
+    context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.98))
+    context.fill(CGRect(
+        x: CGFloat(stressViewport.x),
+        y: CGFloat(stressViewport.y),
+        width: CGFloat(stressViewport.width),
+        height: CGFloat(stressViewport.height)
+    ))
+    context.fill(CGRect(
+        x: CGFloat(densityViewport.x),
+        y: CGFloat(densityViewport.y),
+        width: CGFloat(densityViewport.width),
+        height: CGFloat(densityViewport.height)
+    ))
+
+    let densities = snapshot.elementDensities.count == preparedMesh.elements.count
+        ? snapshot.elementDensities
+        : Array(repeating: Float(1), count: preparedMesh.elements.count)
+
     for (elementIndex, element) in preparedMesh.elements.enumerated() {
         let ids = element.nodeIDs
-        let p0 = frame.project(points[Int(ids[0])])
-        let p1 = frame.project(points[Int(ids[1])])
-        let p2 = frame.project(points[Int(ids[2])])
+        let s0 = stressFrame.project(points[Int(ids[0])])
+        let s1 = stressFrame.project(points[Int(ids[1])])
+        let s2 = stressFrame.project(points[Int(ids[2])])
+        let s3 = stressFrame.project(points[Int(ids[3])])
+        let d0 = densityFrame.project(points[Int(ids[0])])
+        let d1 = densityFrame.project(points[Int(ids[1])])
+        let d2 = densityFrame.project(points[Int(ids[2])])
+        let d3 = densityFrame.project(points[Int(ids[3])])
 
         let stress = snapshot.elementVonMises[elementIndex]
         let t = normalize2D(value: stress, minValue: stressRange.0, maxValue: stressRange.1)
         let color = heatMapColor2D(t)
 
         context.beginPath()
-        context.move(to: p0)
-        context.addLine(to: p1)
-        context.addLine(to: p2)
+        context.move(to: s0)
+        context.addLine(to: s1)
+        context.addLine(to: s2)
+        context.addLine(to: s3)
         context.closePath()
         context.setFillColor(CGColor(
             red: CGFloat(color.x),
@@ -300,9 +364,38 @@ private func writePNGFrame2D(
         context.fillPath()
 
         context.beginPath()
-        context.move(to: p0)
-        context.addLine(to: p1)
-        context.addLine(to: p2)
+        context.move(to: s0)
+        context.addLine(to: s1)
+        context.addLine(to: s2)
+        context.addLine(to: s3)
+        context.closePath()
+        context.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.25))
+        context.setLineWidth(0.6)
+        context.strokePath()
+
+        let density = densities[elementIndex]
+        let densityT = normalize2D(value: density, minValue: densityRange.0, maxValue: densityRange.1)
+        let densityColor = densityMapColor2D(densityT)
+
+        context.beginPath()
+        context.move(to: d0)
+        context.addLine(to: d1)
+        context.addLine(to: d2)
+        context.addLine(to: d3)
+        context.closePath()
+        context.setFillColor(CGColor(
+            red: CGFloat(densityColor.x),
+            green: CGFloat(densityColor.y),
+            blue: CGFloat(densityColor.z),
+            alpha: 1
+        ))
+        context.fillPath()
+
+        context.beginPath()
+        context.move(to: d0)
+        context.addLine(to: d1)
+        context.addLine(to: d2)
+        context.addLine(to: d3)
         context.closePath()
         context.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.25))
         context.setLineWidth(0.6)
@@ -314,9 +407,32 @@ private func writePNGFrame2D(
         problem: problem,
         snapshot: snapshot,
         points: points,
-        frame: frame,
+        frame: stressFrame,
         deformationScale: deformationScale
     )
+    drawPrescribedArrows2D(
+        context: context,
+        problem: problem,
+        snapshot: snapshot,
+        points: points,
+        frame: densityFrame,
+        deformationScale: deformationScale
+    )
+
+    context.setStrokeColor(CGColor(red: 0.15, green: 0.15, blue: 0.18, alpha: 0.45))
+    context.setLineWidth(1.0)
+    context.stroke(CGRect(
+        x: CGFloat(stressViewport.x),
+        y: CGFloat(stressViewport.y),
+        width: CGFloat(stressViewport.width),
+        height: CGFloat(stressViewport.height)
+    ))
+    context.stroke(CGRect(
+        x: CGFloat(densityViewport.x),
+        y: CGFloat(densityViewport.y),
+        width: CGFloat(densityViewport.width),
+        height: CGFloat(densityViewport.height)
+    ))
 
     guard let image = context.makeImage() else {
         throw Visualization2DError.imageCreationFailed
@@ -342,13 +458,21 @@ private struct FrameTransform2D {
     var minY: Float
     var scale: Float
     var imageHeight: Float
+    var viewport: Viewport2D
     var margin: Float
 
     func project(_ point: SIMD2<Float>) -> CGPoint {
-        let x = margin + (point.x - minX) * scale
-        let y = imageHeight - (margin + (point.y - minY) * scale)
+        let x = viewport.x + margin + (point.x - minX) * scale
+        let y = imageHeight - (viewport.y + margin + (point.y - minY) * scale)
         return CGPoint(x: CGFloat(x), y: CGFloat(y))
     }
+}
+
+private struct Viewport2D {
+    var x: Float
+    var y: Float
+    var width: Float
+    var height: Float
 }
 
 private func deformedPoints2D(
@@ -363,7 +487,7 @@ private func deformedPoints2D(
     return points
 }
 
-private func frameTransform2D(points: [SIMD2<Float>], imageWidth: Int, imageHeight: Int) -> FrameTransform2D {
+private func frameTransform2D(points: [SIMD2<Float>], imageHeight: Int, viewport: Viewport2D) -> FrameTransform2D {
     var minX = Float.greatestFiniteMagnitude
     var minY = Float.greatestFiniteMagnitude
     var maxX = -Float.greatestFiniteMagnitude
@@ -376,12 +500,12 @@ private func frameTransform2D(points: [SIMD2<Float>], imageWidth: Int, imageHeig
         maxY = max(maxY, point.y)
     }
 
-    let margin: Float = 30
+    let margin: Float = 14
     let spanX = max(1e-6, maxX - minX)
     let spanY = max(1e-6, maxY - minY)
 
-    let usableWidth = max(1, Float(imageWidth) - 2 * margin)
-    let usableHeight = max(1, Float(imageHeight) - 2 * margin)
+    let usableWidth = max(1, viewport.width - 2 * margin)
+    let usableHeight = max(1, viewport.height - 2 * margin)
     let scale = min(usableWidth / spanX, usableHeight / spanY)
 
     return FrameTransform2D(
@@ -389,6 +513,7 @@ private func frameTransform2D(points: [SIMD2<Float>], imageWidth: Int, imageHeig
         minY: minY,
         scale: scale,
         imageHeight: Float(imageHeight),
+        viewport: viewport,
         margin: margin
     )
 }
@@ -455,5 +580,16 @@ private func heatMapColor2D(_ t: Float) -> SIMD3<Float> {
     } else {
         let s = (x - 0.75) / 0.25
         return SIMD3<Float>(0.95, 0.7 - 0.45 * s, 0.1)
+    }
+}
+
+private func densityMapColor2D(_ t: Float) -> SIMD3<Float> {
+    let x = Swift.max(0, Swift.min(1, t))
+    if x < 0.5 {
+        let s = x / 0.5
+        return SIMD3<Float>(0.08 + 0.32 * s, 0.12 + 0.58 * s, 0.38 + 0.47 * s)
+    } else {
+        let s = (x - 0.5) / 0.5
+        return SIMD3<Float>(0.40 + 0.55 * s, 0.70 - 0.18 * s, 0.85 - 0.62 * s)
     }
 }

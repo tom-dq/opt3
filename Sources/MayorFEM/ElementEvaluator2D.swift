@@ -28,11 +28,18 @@ final class CPUElementEvaluator2D: ElementEvaluator2D {
     private let preparedMesh: PreparedMesh2D
     private let material: MaterialParameters
     private let thickness: Float
+    private let integrationScheme: IntegrationScheme2D
 
-    init(preparedMesh: PreparedMesh2D, material: MaterialParameters, thickness: Float) {
+    init(
+        preparedMesh: PreparedMesh2D,
+        material: MaterialParameters,
+        thickness: Float,
+        integrationScheme: IntegrationScheme2D
+    ) {
         self.preparedMesh = preparedMesh
         self.material = material
         self.thickness = thickness
+        self.integrationScheme = integrationScheme
     }
 
     func evaluate(
@@ -53,7 +60,7 @@ final class CPUElementEvaluator2D: ElementEvaluator2D {
         }
 
         let elementCount = preparedMesh.elements.count
-        var forces = Array(repeating: SIMD2<Float>.zero, count: elementCount * 3)
+        var forces = Array(repeating: SIMD2<Float>.zero, count: elementCount * 4)
         var states = Array(repeating: ElementState.zero, count: elementCount)
         var vonMises = Array(repeating: Float(0), count: elementCount)
         var energies = Array(repeating: Float(0), count: elementCount)
@@ -63,21 +70,24 @@ final class CPUElementEvaluator2D: ElementEvaluator2D {
             let reference = gatherElementNodalVectors2D(geometry: geometry, values: preparedMesh.nodes)
             let localDisplacements = gatherElementNodalVectors2D(geometry: geometry, values: displacements)
             let previousState = previousStates[elementIndex]
+
             let response = computeLocalElementResponse2D(
                 geometry: geometry,
                 reference: reference,
                 displacements: localDisplacements,
                 previousState: previousState,
                 material: material,
-                thickness: thickness
+                thickness: thickness,
+                integrationScheme: integrationScheme
             )
 
             let scale = densityScaleFactor(densities[elementIndex], penalty: densityPenalty, minimumDensity: minimumDensity)
 
-            let base = elementIndex * 3
+            let base = elementIndex * 4
             forces[base] = scale * response.forces.n0
             forces[base + 1] = scale * response.forces.n1
             forces[base + 2] = scale * response.forces.n2
+            forces[base + 3] = scale * response.forces.n3
 
             let blendedEqp = previousState.equivalentPlasticStrain +
                 scale * (response.updatedState.equivalentPlasticStrain - previousState.equivalentPlasticStrain)

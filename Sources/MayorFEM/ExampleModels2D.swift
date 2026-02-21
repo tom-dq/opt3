@@ -7,6 +7,7 @@ public enum ExampleProblems2D {
         nx: Int = 8,
         ny: Int = 3,
         order: ElementOrder2D = .linear,
+        integrationScheme: IntegrationScheme2D = .full,
         subdivisionLevels: Int = 0,
         endDisplacement: Float = 0.08,
         loadSteps: Int = 12
@@ -59,6 +60,7 @@ public enum ExampleProblems2D {
             mesh: mesh,
             material: material,
             thickness: 1.0,
+            integrationScheme: integrationScheme,
             prescribedDisplacements: prescribed,
             controls: controls
         )
@@ -69,6 +71,7 @@ public enum ExampleProblems2D {
         nx: Int = 6,
         ny: Int = 6,
         order: ElementOrder2D = .linear,
+        integrationScheme: IntegrationScheme2D = .full,
         subdivisionLevels: Int = 0,
         topDisplacement: Float = 0.1,
         loadSteps: Int = 10
@@ -121,6 +124,7 @@ public enum ExampleProblems2D {
             mesh: mesh,
             material: material,
             thickness: 1.0,
+            integrationScheme: integrationScheme,
             prescribedDisplacements: prescribed,
             controls: controls
         )

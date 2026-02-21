@@ -22,12 +22,16 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
 
     private let referenceBuffer: MTLBuffer
     private let nodeIDBuffer: MTLBuffer
-    private let gradientBuffer: MTLBuffer
-    private let areaBuffer: MTLBuffer
     private let materialBuffer: MTLBuffer
     private let thickness: Float
+    private let integrationMode: Int32
 
-    init?(preparedMesh: PreparedMesh2D, material: MaterialParameters, thickness: Float) throws {
+    init?(
+        preparedMesh: PreparedMesh2D,
+        material: MaterialParameters,
+        thickness: Float,
+        integrationScheme: IntegrationScheme2D
+    ) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             return nil
         }
@@ -39,6 +43,7 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
         self.device = device
         self.commandQueue = commandQueue
         self.thickness = thickness
+        self.integrationMode = integrationScheme == .full ? 1 : 0
 
         let shaderURL = Bundle.module.url(forResource: "ElementKernels", withExtension: "metal")
         guard let shaderURL else {
@@ -48,28 +53,13 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
         let shaderSource = try String(contentsOf: shaderURL, encoding: .utf8)
         let library = try device.makeLibrary(source: shaderSource, options: nil)
 
-        guard let function = library.makeFunction(name: "elementResidualKernel2D") else {
-            throw FEMError.backendUnavailable("Metal shader function elementResidualKernel2D not found.")
+        guard let function = library.makeFunction(name: "elementResidualKernel2DQuad4") else {
+            throw FEMError.backendUnavailable("Metal shader function elementResidualKernel2DQuad4 not found.")
         }
 
         self.pipelineState = try device.makeComputePipelineState(function: function)
 
-        var nodeIDs: [UInt32] = []
-        var gradients: [SIMD2<Float>] = []
-        var areas: [Float] = []
-        nodeIDs.reserveCapacity(preparedMesh.elements.count * 3)
-        gradients.reserveCapacity(preparedMesh.elements.count * 3)
-        areas.reserveCapacity(preparedMesh.elements.count)
-
-        for element in preparedMesh.elements {
-            nodeIDs.append(element.nodeIDs[0])
-            nodeIDs.append(element.nodeIDs[1])
-            nodeIDs.append(element.nodeIDs[2])
-            gradients.append(element.gradN0)
-            gradients.append(element.gradN1)
-            gradients.append(element.gradN2)
-            areas.append(element.area)
-        }
+        let nodeIDs = preparedMesh.elements.map(\.nodeIDs)
 
         guard let referenceBuffer = device.makeBuffer(
             bytes: preparedMesh.nodes,
@@ -81,26 +71,10 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
 
         guard let nodeIDBuffer = device.makeBuffer(
             bytes: nodeIDs,
-            length: MemoryLayout<UInt32>.stride * nodeIDs.count,
+            length: MemoryLayout<SIMD4<UInt32>>.stride * nodeIDs.count,
             options: .storageModeShared
         ) else {
             throw FEMError.backendUnavailable("Failed to allocate 2D node-ID buffer.")
-        }
-
-        guard let gradientBuffer = device.makeBuffer(
-            bytes: gradients,
-            length: MemoryLayout<SIMD2<Float>>.stride * gradients.count,
-            options: .storageModeShared
-        ) else {
-            throw FEMError.backendUnavailable("Failed to allocate 2D gradient buffer.")
-        }
-
-        guard let areaBuffer = device.makeBuffer(
-            bytes: areas,
-            length: MemoryLayout<Float>.stride * areas.count,
-            options: .storageModeShared
-        ) else {
-            throw FEMError.backendUnavailable("Failed to allocate 2D area buffer.")
         }
 
         let constants = MaterialConstants2D(
@@ -124,8 +98,6 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
 
         self.referenceBuffer = referenceBuffer
         self.nodeIDBuffer = nodeIDBuffer
-        self.gradientBuffer = gradientBuffer
-        self.areaBuffer = areaBuffer
         self.materialBuffer = materialBuffer
     }
 
@@ -173,7 +145,7 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
         }
 
         guard let forceBuffer = device.makeBuffer(
-            length: MemoryLayout<SIMD2<Float>>.stride * elementCount * 3,
+            length: MemoryLayout<SIMD2<Float>>.stride * elementCount * 4,
             options: .storageModeShared
         ) else {
             throw FEMError.backendUnavailable("Failed to allocate 2D force output buffer.")
@@ -209,24 +181,24 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
         var localThickness = thickness
         var localDensityPenalty = densityPenalty
         var localMinimumDensity = minimumDensity
+        var localIntegrationMode = integrationMode
 
         encoder.setComputePipelineState(pipelineState)
         encoder.setBuffer(referenceBuffer, offset: 0, index: 0)
         encoder.setBuffer(displacementBuffer, offset: 0, index: 1)
         encoder.setBuffer(nodeIDBuffer, offset: 0, index: 2)
-        encoder.setBuffer(gradientBuffer, offset: 0, index: 3)
-        encoder.setBuffer(areaBuffer, offset: 0, index: 4)
-        encoder.setBuffer(materialBuffer, offset: 0, index: 5)
-        encoder.setBytes(&localThickness, length: MemoryLayout<Float>.stride, index: 6)
-        encoder.setBuffer(previousStateBuffer, offset: 0, index: 7)
-        encoder.setBuffer(densityBuffer, offset: 0, index: 8)
-        encoder.setBytes(&localDensityPenalty, length: MemoryLayout<Float>.stride, index: 9)
-        encoder.setBytes(&localMinimumDensity, length: MemoryLayout<Float>.stride, index: 10)
-        encoder.setBuffer(forceBuffer, offset: 0, index: 11)
-        encoder.setBuffer(trialStateBuffer, offset: 0, index: 12)
-        encoder.setBuffer(vonMisesBuffer, offset: 0, index: 13)
-        encoder.setBuffer(strainEnergyBuffer, offset: 0, index: 14)
-        encoder.setBytes(&elementCountUInt32, length: MemoryLayout<UInt32>.stride, index: 15)
+        encoder.setBuffer(materialBuffer, offset: 0, index: 3)
+        encoder.setBytes(&localThickness, length: MemoryLayout<Float>.stride, index: 4)
+        encoder.setBuffer(previousStateBuffer, offset: 0, index: 5)
+        encoder.setBuffer(densityBuffer, offset: 0, index: 6)
+        encoder.setBytes(&localDensityPenalty, length: MemoryLayout<Float>.stride, index: 7)
+        encoder.setBytes(&localMinimumDensity, length: MemoryLayout<Float>.stride, index: 8)
+        encoder.setBytes(&localIntegrationMode, length: MemoryLayout<Int32>.stride, index: 9)
+        encoder.setBuffer(forceBuffer, offset: 0, index: 10)
+        encoder.setBuffer(trialStateBuffer, offset: 0, index: 11)
+        encoder.setBuffer(vonMisesBuffer, offset: 0, index: 12)
+        encoder.setBuffer(strainEnergyBuffer, offset: 0, index: 13)
+        encoder.setBytes(&elementCountUInt32, length: MemoryLayout<UInt32>.stride, index: 14)
 
         let executionWidth = max(1, pipelineState.threadExecutionWidth)
         let threadsPerThreadgroup = MTLSize(width: executionWidth, height: 1, depth: 1)
@@ -245,9 +217,9 @@ final class MetalElementEvaluator2D: ElementEvaluator2D {
 
         let forcePointer = forceBuffer.contents().bindMemory(
             to: SIMD2<Float>.self,
-            capacity: elementCount * 3
+            capacity: elementCount * 4
         )
-        let forces = Array(UnsafeBufferPointer(start: forcePointer, count: elementCount * 3))
+        let forces = Array(UnsafeBufferPointer(start: forcePointer, count: elementCount * 4))
 
         let statePointer = trialStateBuffer.contents().bindMemory(
             to: ElementState.self,

@@ -5,6 +5,7 @@ struct ElementNodalVectors2D {
     var n0: SIMD2<Float>
     var n1: SIMD2<Float>
     var n2: SIMD2<Float>
+    var n3: SIMD2<Float>
 
     subscript(localIndex: Int) -> SIMD2<Float> {
         get {
@@ -12,8 +13,9 @@ struct ElementNodalVectors2D {
             case 0: return n0
             case 1: return n1
             case 2: return n2
+            case 3: return n3
             default:
-                preconditionFailure("Local node index must be in 0...2")
+                preconditionFailure("Local quad node index must be in 0...3")
             }
         }
         set {
@@ -21,8 +23,9 @@ struct ElementNodalVectors2D {
             case 0: n0 = newValue
             case 1: n1 = newValue
             case 2: n2 = newValue
+            case 3: n3 = newValue
             default:
-                preconditionFailure("Local node index must be in 0...2")
+                preconditionFailure("Local quad node index must be in 0...3")
             }
         }
     }
@@ -35,18 +38,28 @@ struct ElementLocalResponse2D {
     var strainEnergy: Float
 }
 
+struct ElementLinearization2D {
+    var nodeIDs: SIMD4<UInt32>
+    var localResidual: [Float]
+    var localTangent: [Float]
+    var updatedState: ElementState
+    var vonMisesStress: Float
+    var strainEnergy: Float
+}
+
 @inline(__always)
 private func outerProduct2(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> simd_float2x2 {
     simd_float2x2(columns: (a * b.x, a * b.y))
 }
 
 @inline(__always)
-func gatherElementNodalVectors2D(geometry: Tri3Geometry2D, values: [SIMD2<Float>]) -> ElementNodalVectors2D {
+func gatherElementNodalVectors2D(geometry: Quad4Geometry2D, values: [SIMD2<Float>]) -> ElementNodalVectors2D {
     let ids = geometry.nodeIDs
     return ElementNodalVectors2D(
         n0: values[Int(ids[0])],
         n1: values[Int(ids[1])],
-        n2: values[Int(ids[2])]
+        n2: values[Int(ids[2])],
+        n3: values[Int(ids[3])]
     )
 }
 
@@ -56,6 +69,7 @@ func flattenElementNodalVectors2D(_ vectors: ElementNodalVectors2D) -> [Float] {
         vectors.n0.x, vectors.n0.y,
         vectors.n1.x, vectors.n1.y,
         vectors.n2.x, vectors.n2.y,
+        vectors.n3.x, vectors.n3.y,
     ]
 }
 
@@ -78,28 +92,54 @@ private func embedPlaneStrain(_ F2: simd_float2x2) -> simd_float3x3 {
     ))
 }
 
+private struct QuadIntegrationPoint {
+    var xi: Float
+    var eta: Float
+    var weight: Float
+}
+
+private func integrationPoints2D(scheme: IntegrationScheme2D) -> [QuadIntegrationPoint] {
+    switch scheme {
+    case .reduced:
+        return [QuadIntegrationPoint(xi: 0, eta: 0, weight: 4)]
+    case .full:
+        let a = Float(1.0 / sqrt(3.0))
+        return [
+            QuadIntegrationPoint(xi: -a, eta: -a, weight: 1),
+            QuadIntegrationPoint(xi: a, eta: -a, weight: 1),
+            QuadIntegrationPoint(xi: a, eta: a, weight: 1),
+            QuadIntegrationPoint(xi: -a, eta: a, weight: 1),
+        ]
+    }
+}
+
 @inline(__always)
-func computeLocalElementResponse2D(
-    geometry: Tri3Geometry2D,
-    reference: ElementNodalVectors2D,
-    displacements: ElementNodalVectors2D,
+private func shapeDerivativesQuad4(xi: Float, eta: Float) -> (dXi: [Float], dEta: [Float]) {
+    let dXi: [Float] = [
+        -0.25 * (1 - eta),
+         0.25 * (1 - eta),
+         0.25 * (1 + eta),
+        -0.25 * (1 + eta),
+    ]
+
+    let dEta: [Float] = [
+        -0.25 * (1 - xi),
+        -0.25 * (1 + xi),
+         0.25 * (1 + xi),
+         0.25 * (1 - xi),
+    ]
+
+    return (dXi: dXi, dEta: dEta)
+}
+
+@inline(__always)
+private func materialPointUpdate2D(
+    deformationGradient2D: simd_float2x2,
     previousState: ElementState,
     material: MaterialParameters,
-    thickness: Float,
-    regularization: Float = 1e-5
-) -> ElementLocalResponse2D {
-    let x0 = reference.n0 + displacements.n0
-    let x1 = reference.n1 + displacements.n1
-    let x2 = reference.n2 + displacements.n2
-
-    let g0 = geometry.gradN0
-    let g1 = geometry.gradN1
-    let g2 = geometry.gradN2
-
-    var F2 = outerProduct2(x0, g0)
-    F2 += outerProduct2(x1, g1)
-    F2 += outerProduct2(x2, g2)
-
+    regularization: Float
+) -> (firstPiola2D: simd_float2x2, updatedState: ElementState, vonMises: Float) {
+    var F2 = deformationGradient2D
     var detF2 = simd_determinant(F2)
     if detF2 < regularization {
         F2 += (regularization - detF2) * matrix_identity_float2x2
@@ -108,7 +148,6 @@ func computeLocalElementResponse2D(
     detF2 = max(detF2, regularization)
 
     let F = embedPlaneStrain(F2)
-
     let leftCauchyGreen = F * simd_transpose(F)
     let identity = matrix_identity_float3x3
     let trialKirchhoff = material.mu * (leftCauchyGreen - identity) + material.lambda * log(detF2) * identity
@@ -143,49 +182,137 @@ func computeLocalElementResponse2D(
 
     let inverseTransposeF = simd_transpose(simd_inverse(F))
     let firstPiola3D = kirchhoff * inverseTransposeF
-    let firstPiola = simd_float2x2(columns: (
+    let firstPiola2D = simd_float2x2(columns: (
         SIMD2<Float>(firstPiola3D.columns.0.x, firstPiola3D.columns.0.y),
         SIMD2<Float>(firstPiola3D.columns.1.x, firstPiola3D.columns.1.y)
     ))
 
-    let scale = thickness * geometry.area
-
-    return ElementLocalResponse2D(
-        forces: ElementNodalVectors2D(
-            n0: scale * (firstPiola * g0),
-            n1: scale * (firstPiola * g1),
-            n2: scale * (firstPiola * g2)
-        ),
+    return (
+        firstPiola2D: firstPiola2D,
         updatedState: ElementState(equivalentPlasticStrain: equivalentPlasticStrain, damage: damage),
-        vonMisesStress: vonMisesStress,
-        strainEnergy: abs(
-            0.5 * (
-                simd_dot(scale * (firstPiola * g0), displacements.n0) +
-                simd_dot(scale * (firstPiola * g1), displacements.n1) +
-                simd_dot(scale * (firstPiola * g2), displacements.n2)
-            )
-        )
+        vonMises: vonMisesStress
     )
 }
 
-struct ElementLinearization2D {
-    var nodeIDs: SIMD3<UInt32>
-    var localResidual: [Float]
-    var localTangent: [Float]
-    var updatedState: ElementState
-    var vonMisesStress: Float
-    var strainEnergy: Float
+@inline(__always)
+func computeLocalElementResponse2D(
+    geometry: Quad4Geometry2D,
+    reference: ElementNodalVectors2D,
+    displacements: ElementNodalVectors2D,
+    previousState: ElementState,
+    material: MaterialParameters,
+    thickness: Float,
+    integrationScheme: IntegrationScheme2D,
+    regularization: Float = 1e-5
+) -> ElementLocalResponse2D {
+    let referenceNodes = [reference.n0, reference.n1, reference.n2, reference.n3]
+    let displacementNodes = [displacements.n0, displacements.n1, displacements.n2, displacements.n3]
+    let currentNodes = [
+        reference.n0 + displacements.n0,
+        reference.n1 + displacements.n1,
+        reference.n2 + displacements.n2,
+        reference.n3 + displacements.n3,
+    ]
+
+    let points = integrationPoints2D(scheme: integrationScheme)
+    var nodalForces = Array(repeating: SIMD2<Float>.zero, count: 4)
+
+    var weightedEqp: Float = 0
+    var weightedDamage: Float = 0
+    var weightedVonMises: Float = 0
+    var totalWeight: Float = 0
+
+    for point in points {
+        let derivatives = shapeDerivativesQuad4(xi: point.xi, eta: point.eta)
+
+        var dX_dXi = SIMD2<Float>.zero
+        var dX_dEta = SIMD2<Float>.zero
+        for i in 0..<4 {
+            dX_dXi += derivatives.dXi[i] * referenceNodes[i]
+            dX_dEta += derivatives.dEta[i] * referenceNodes[i]
+        }
+
+        var jacobian = simd_float2x2(columns: (dX_dXi, dX_dEta))
+        var detJ = simd_determinant(jacobian)
+        if detJ < regularization {
+            jacobian += (regularization - detJ) * matrix_identity_float2x2
+            detJ = simd_determinant(jacobian)
+        }
+        detJ = max(detJ, regularization)
+
+        let inverseTransposeJ = simd_transpose(simd_inverse(jacobian))
+
+        var gradients: [SIMD2<Float>] = []
+        gradients.reserveCapacity(4)
+        for i in 0..<4 {
+            gradients.append(inverseTransposeJ * SIMD2<Float>(derivatives.dXi[i], derivatives.dEta[i]))
+        }
+
+        var deformationGradient2D = simd_float2x2(columns: (SIMD2<Float>.zero, SIMD2<Float>.zero))
+        for i in 0..<4 {
+            deformationGradient2D += outerProduct2(currentNodes[i], gradients[i])
+        }
+
+        let update = materialPointUpdate2D(
+            deformationGradient2D: deformationGradient2D,
+            previousState: previousState,
+            material: material,
+            regularization: regularization
+        )
+
+        let weight = thickness * detJ * point.weight
+        for i in 0..<4 {
+            nodalForces[i] += weight * (update.firstPiola2D * gradients[i])
+        }
+
+        weightedEqp += weight * update.updatedState.equivalentPlasticStrain
+        weightedDamage += weight * update.updatedState.damage
+        weightedVonMises += weight * update.vonMises
+        totalWeight += weight
+    }
+
+    let invWeight = totalWeight > 0 ? 1.0 / totalWeight : 0
+    let updatedState = ElementState(
+        equivalentPlasticStrain: weightedEqp * invWeight,
+        damage: weightedDamage * invWeight
+    )
+    let vonMises = weightedVonMises * invWeight
+
+    var strainEnergy: Float = 0
+    for i in 0..<4 {
+        strainEnergy += simd_dot(nodalForces[i], displacementNodes[i])
+    }
+    strainEnergy = abs(0.5 * strainEnergy)
+
+    return ElementLocalResponse2D(
+        forces: ElementNodalVectors2D(
+            n0: nodalForces[0],
+            n1: nodalForces[1],
+            n2: nodalForces[2],
+            n3: nodalForces[3]
+        ),
+        updatedState: updatedState,
+        vonMisesStress: vonMises,
+        strainEnergy: strainEnergy
+    )
 }
 
 final class CPUElementLinearizer2D {
     private let preparedMesh: PreparedMesh2D
     private let material: MaterialParameters
     private let thickness: Float
+    private let integrationScheme: IntegrationScheme2D
 
-    init(preparedMesh: PreparedMesh2D, material: MaterialParameters, thickness: Float) {
+    init(
+        preparedMesh: PreparedMesh2D,
+        material: MaterialParameters,
+        thickness: Float,
+        integrationScheme: IntegrationScheme2D
+    ) {
         self.preparedMesh = preparedMesh
         self.material = material
         self.thickness = thickness
+        self.integrationScheme = integrationScheme
     }
 
     func linearize(
@@ -204,12 +331,13 @@ final class CPUElementLinearizer2D {
             displacements: localDisplacements,
             previousState: previousState,
             material: material,
-            thickness: thickness
+            thickness: thickness,
+            integrationScheme: integrationScheme
         )
         let baseResidual = flattenElementNodalVectors2D(baseResponse.forces)
-        var localTangent = Array(repeating: Float(0), count: 6 * 6)
+        var localTangent = Array(repeating: Float(0), count: 8 * 8)
 
-        for column in 0..<6 {
+        for column in 0..<8 {
             let node = column / 2
             let component = column % 2
 
@@ -225,12 +353,13 @@ final class CPUElementLinearizer2D {
                 displacements: perturbedDisplacements,
                 previousState: previousState,
                 material: material,
-                thickness: thickness
+                thickness: thickness,
+                integrationScheme: integrationScheme
             )
             let perturbedResidual = flattenElementNodalVectors2D(perturbedResponse.forces)
 
-            for row in 0..<6 {
-                localTangent[row * 6 + column] =
+            for row in 0..<8 {
+                localTangent[row * 8 + column] =
                     (perturbedResidual[row] - baseResidual[row]) / perturbation
             }
         }

@@ -6,40 +6,13 @@ public enum ElementOrder2D {
     case quadratic
 }
 
-public struct Tri6Connectivity {
-    public var n0: UInt32
-    public var n1: UInt32
-    public var n2: UInt32
-    public var n3: UInt32
-    public var n4: UInt32
-    public var n5: UInt32
-
-    public init(_ n0: UInt32, _ n1: UInt32, _ n2: UInt32, _ n3: UInt32, _ n4: UInt32, _ n5: UInt32) {
-        self.n0 = n0
-        self.n1 = n1
-        self.n2 = n2
-        self.n3 = n3
-        self.n4 = n4
-        self.n5 = n5
-    }
-
-    subscript(index: Int) -> UInt32 {
-        switch index {
-        case 0: return n0
-        case 1: return n1
-        case 2: return n2
-        case 3: return n3
-        case 4: return n4
-        case 5: return n5
-        default:
-            preconditionFailure("Tri6 index must be in 0...5")
-        }
-    }
+public enum IntegrationScheme2D {
+    case full
+    case reduced
 }
 
 public enum Element2D {
-    case tri3(SIMD3<UInt32>)
-    case tri6(Tri6Connectivity)
+    case quad4(SIMD4<UInt32>)
 }
 
 public struct Mesh2D {
@@ -60,43 +33,40 @@ public struct Mesh2D {
     ) -> Mesh2D {
         precondition(nx > 0 && ny > 0)
 
-        let dx = length / Float(nx)
-        let dy = height / Float(ny)
+        // Quadratic mode uses an enriched quad mesh with doubled base resolution.
+        let effectiveNX = order == .quadratic ? 2 * nx : nx
+        let effectiveNY = order == .quadratic ? 2 * ny : ny
+
+        let dx = length / Float(effectiveNX)
+        let dy = height / Float(effectiveNY)
 
         var nodes: [SIMD2<Float>] = []
-        nodes.reserveCapacity((nx + 1) * (ny + 1))
+        nodes.reserveCapacity((effectiveNX + 1) * (effectiveNY + 1))
 
-        for j in 0...ny {
-            for i in 0...nx {
+        for j in 0...effectiveNY {
+            for i in 0...effectiveNX {
                 nodes.append(SIMD2<Float>(Float(i) * dx, Float(j) * dy))
             }
         }
 
         func node(_ i: Int, _ j: Int) -> UInt32 {
-            UInt32(j * (nx + 1) + i)
+            UInt32(j * (effectiveNX + 1) + i)
         }
 
-        var tri3: [SIMD3<UInt32>] = []
-        tri3.reserveCapacity(nx * ny * 2)
+        var elements: [Element2D] = []
+        elements.reserveCapacity(effectiveNX * effectiveNY)
 
-        for j in 0..<ny {
-            for i in 0..<nx {
+        for j in 0..<effectiveNY {
+            for i in 0..<effectiveNX {
                 let n00 = node(i, j)
                 let n10 = node(i + 1, j)
-                let n01 = node(i, j + 1)
                 let n11 = node(i + 1, j + 1)
-
-                tri3.append(SIMD3<UInt32>(n00, n10, n11))
-                tri3.append(SIMD3<UInt32>(n00, n11, n01))
+                let n01 = node(i, j + 1)
+                elements.append(.quad4(SIMD4<UInt32>(n00, n10, n11, n01)))
             }
         }
 
-        switch order {
-        case .linear:
-            return Mesh2D(nodes: nodes, elements: tri3.map(Element2D.tri3))
-        case .quadratic:
-            return upgradeToQuadratic(nodes: nodes, tri3: tri3)
-        }
+        return Mesh2D(nodes: nodes, elements: elements)
     }
 
     public func subdivided(levels: Int) -> Mesh2D {
@@ -105,12 +75,12 @@ public struct Mesh2D {
         }
 
         var workingNodes = nodes
-        var workingTriangles = linearizedTriangles(elements: elements)
+        var quads = linearizedQuads(elements: elements)
 
         for _ in 0..<levels {
             var edgeMap: [EdgeKey2D: UInt32] = [:]
-            var refined: [SIMD3<UInt32>] = []
-            refined.reserveCapacity(workingTriangles.count * 4)
+            var refined: [SIMD4<UInt32>] = []
+            refined.reserveCapacity(quads.count * 4)
 
             func midpoint(_ a: UInt32, _ b: UInt32) -> UInt32 {
                 let key = EdgeKey2D(a, b)
@@ -119,86 +89,55 @@ public struct Mesh2D {
                 }
                 let pa = workingNodes[Int(a)]
                 let pb = workingNodes[Int(b)]
-                let p = 0.5 * (pa + pb)
+                let point = 0.5 * (pa + pb)
                 let id = UInt32(workingNodes.count)
-                workingNodes.append(p)
+                workingNodes.append(point)
                 edgeMap[key] = id
                 return id
             }
 
-            for triangle in workingTriangles {
-                let a = triangle.x
-                let b = triangle.y
-                let c = triangle.z
+            for quad in quads {
+                let n0 = quad[0]
+                let n1 = quad[1]
+                let n2 = quad[2]
+                let n3 = quad[3]
 
-                let ab = midpoint(a, b)
-                let bc = midpoint(b, c)
-                let ca = midpoint(c, a)
+                let m01 = midpoint(n0, n1)
+                let m12 = midpoint(n1, n2)
+                let m23 = midpoint(n2, n3)
+                let m30 = midpoint(n3, n0)
 
-                refined.append(SIMD3<UInt32>(a, ab, ca))
-                refined.append(SIMD3<UInt32>(ab, b, bc))
-                refined.append(SIMD3<UInt32>(ca, bc, c))
-                refined.append(SIMD3<UInt32>(ab, bc, ca))
+                let center = UInt32(workingNodes.count)
+                let p0 = workingNodes[Int(n0)]
+                let p1 = workingNodes[Int(n1)]
+                let p2 = workingNodes[Int(n2)]
+                let p3 = workingNodes[Int(n3)]
+                workingNodes.append(0.25 * (p0 + p1 + p2 + p3))
+
+                refined.append(SIMD4<UInt32>(n0, m01, center, m30))
+                refined.append(SIMD4<UInt32>(m01, n1, m12, center))
+                refined.append(SIMD4<UInt32>(center, m12, n2, m23))
+                refined.append(SIMD4<UInt32>(m30, center, m23, n3))
             }
 
-            workingTriangles = refined
+            quads = refined
         }
 
-        return Mesh2D(nodes: workingNodes, elements: workingTriangles.map(Element2D.tri3))
+        return Mesh2D(nodes: workingNodes, elements: quads.map(Element2D.quad4))
     }
 
-    private static func upgradeToQuadratic(nodes: [SIMD2<Float>], tri3: [SIMD3<UInt32>]) -> Mesh2D {
-        var upgradedNodes = nodes
-        var edgeMidpoint: [EdgeKey2D: UInt32] = [:]
-        var elements: [Element2D] = []
-        elements.reserveCapacity(tri3.count)
-
-        func midpoint(_ a: UInt32, _ b: UInt32) -> UInt32 {
-            let key = EdgeKey2D(a, b)
-            if let id = edgeMidpoint[key] {
-                return id
-            }
-            let pa = upgradedNodes[Int(a)]
-            let pb = upgradedNodes[Int(b)]
-            let p = 0.5 * (pa + pb)
-            let id = UInt32(upgradedNodes.count)
-            upgradedNodes.append(p)
-            edgeMidpoint[key] = id
-            return id
-        }
-
-        for triangle in tri3 {
-            let a = triangle.x
-            let b = triangle.y
-            let c = triangle.z
-
-            let ab = midpoint(a, b)
-            let bc = midpoint(b, c)
-            let ca = midpoint(c, a)
-
-            elements.append(.tri6(Tri6Connectivity(a, b, c, ab, bc, ca)))
-        }
-
-        return Mesh2D(nodes: upgradedNodes, elements: elements)
-    }
-
-    func linearizedTriangles(elements: [Element2D]) -> [SIMD3<UInt32>] {
-        var triangles: [SIMD3<UInt32>] = []
-        triangles.reserveCapacity(elements.count * 4)
+    func linearizedQuads(elements: [Element2D]) -> [SIMD4<UInt32>] {
+        var quads: [SIMD4<UInt32>] = []
+        quads.reserveCapacity(elements.count)
 
         for element in elements {
             switch element {
-            case .tri3(let tri):
-                triangles.append(tri)
-            case .tri6(let tri):
-                triangles.append(SIMD3<UInt32>(tri.n0, tri.n3, tri.n5))
-                triangles.append(SIMD3<UInt32>(tri.n3, tri.n1, tri.n4))
-                triangles.append(SIMD3<UInt32>(tri.n5, tri.n4, tri.n2))
-                triangles.append(SIMD3<UInt32>(tri.n3, tri.n4, tri.n5))
+            case .quad4(let quad):
+                quads.append(quad)
             }
         }
 
-        return triangles
+        return quads
     }
 }
 
@@ -237,6 +176,7 @@ public struct FEMProblem2D {
     public var mesh: Mesh2D
     public var material: MaterialParameters
     public var thickness: Float
+    public var integrationScheme: IntegrationScheme2D
     public var prescribedDisplacements: [PrescribedDisplacement2D]
     public var controls: SolverControls
 
@@ -244,12 +184,14 @@ public struct FEMProblem2D {
         mesh: Mesh2D,
         material: MaterialParameters,
         thickness: Float = 1.0,
+        integrationScheme: IntegrationScheme2D = .full,
         prescribedDisplacements: [PrescribedDisplacement2D],
         controls: SolverControls = SolverControls()
     ) {
         self.mesh = mesh
         self.material = material
         self.thickness = thickness
+        self.integrationScheme = integrationScheme
         self.prescribedDisplacements = prescribedDisplacements
         self.controls = controls
     }
@@ -320,7 +262,8 @@ public struct TopologyOptimizationControls2D {
     public var patchRadius: Int
     public var minimumDensity: Float
     public var maximumDensity: Float
-    public var targetVolumeFraction: Float?
+    public var targetVolumeFractionStart: Float?
+    public var targetVolumeFractionEnd: Float?
     public var moveLimit: Float
     public var referenceElementStride: Int
     public var objectiveTolerance: Float
@@ -330,9 +273,10 @@ public struct TopologyOptimizationControls2D {
     public init(
         iterations: Int = 8,
         patchRadius: Int = 1,
-        minimumDensity: Float = 0.05,
+        minimumDensity: Float = 0.001,
         maximumDensity: Float = 1.0,
-        targetVolumeFraction: Float? = nil,
+        targetVolumeFractionStart: Float? = nil,
+        targetVolumeFractionEnd: Float? = nil,
         moveLimit: Float = 0.12,
         referenceElementStride: Int = 1,
         objectiveTolerance: Float = 1e-5,
@@ -343,11 +287,18 @@ public struct TopologyOptimizationControls2D {
         self.patchRadius = max(0, patchRadius)
         self.minimumDensity = max(0.001, min(1.0, minimumDensity))
         self.maximumDensity = max(self.minimumDensity, min(1.0, maximumDensity))
-        if let targetVolumeFraction {
-            self.targetVolumeFraction = max(self.minimumDensity, min(self.maximumDensity, targetVolumeFraction))
+
+        if let targetVolumeFractionStart {
+            self.targetVolumeFractionStart = max(self.minimumDensity, min(self.maximumDensity, targetVolumeFractionStart))
         } else {
-            self.targetVolumeFraction = nil
+            self.targetVolumeFractionStart = nil
         }
+        if let targetVolumeFractionEnd {
+            self.targetVolumeFractionEnd = max(self.minimumDensity, min(self.maximumDensity, targetVolumeFractionEnd))
+        } else {
+            self.targetVolumeFractionEnd = nil
+        }
+
         self.moveLimit = max(1e-3, moveLimit)
         self.referenceElementStride = max(1, referenceElementStride)
         self.objectiveTolerance = max(1e-8, objectiveTolerance)
@@ -370,6 +321,7 @@ public struct TopologyIterationResult2D {
     public var iteration: Int
     public var objective: Float
     public var averageDensity: Float
+    public var targetVolumeFraction: Float
     public var totalDensityChange: Float
     public var volumeViolation: Float
     public var updatedElementCount: Int

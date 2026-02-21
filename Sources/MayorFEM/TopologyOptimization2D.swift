@@ -68,7 +68,7 @@ public final class PatchTopologyOptimizer2D {
         for index in densities.indices {
             densities[index] = max(controls.minimumDensity, min(controls.maximumDensity, densities[index]))
         }
-        if let target = controls.targetVolumeFraction {
+        if let target = targetVolumeFraction(forIteration: 0) {
             projectDensitiesToTargetAverage(&densities, targetAverage: target)
         }
 
@@ -144,7 +144,8 @@ public final class PatchTopologyOptimizer2D {
                 }
             }
 
-            if let target = controls.targetVolumeFraction {
+            let target = targetVolumeFraction(forIteration: iteration)
+            if let target {
                 projectDensitiesToTargetAverage(&updated, targetAverage: target)
             }
 
@@ -162,18 +163,15 @@ public final class PatchTopologyOptimizer2D {
                 )
             )
             let averageDensity = densities.reduce(0, +) / Float(max(1, densities.count))
-            let volumeViolation: Float
-            if let target = controls.targetVolumeFraction {
-                volumeViolation = averageDensity - target
-            } else {
-                volumeViolation = 0
-            }
+            let activeTarget = target ?? averageDensity
+            let volumeViolation = averageDensity - activeTarget
 
             history.append(
                 TopologyIterationResult2D(
                     iteration: iteration,
                     objective: objectiveValue,
                     averageDensity: averageDensity,
+                    targetVolumeFraction: activeTarget,
                     totalDensityChange: totalDensityChange,
                     volumeViolation: volumeViolation,
                     updatedElementCount: updatedElementCount
@@ -257,6 +255,7 @@ public final class PatchTopologyOptimizer2D {
             nodeToElements[Int(element.nodeIDs[0])].append(elementIndex)
             nodeToElements[Int(element.nodeIDs[1])].append(elementIndex)
             nodeToElements[Int(element.nodeIDs[2])].append(elementIndex)
+            nodeToElements[Int(element.nodeIDs[3])].append(elementIndex)
         }
 
         var adjacency = Array(repeating: Set<Int>(), count: preparedMesh.elements.count)
@@ -269,6 +268,24 @@ public final class PatchTopologyOptimizer2D {
         }
 
         return adjacency.map { $0.sorted() }
+    }
+
+    private func targetVolumeFraction(forIteration iteration: Int) -> Float? {
+        switch (controls.targetVolumeFractionStart, controls.targetVolumeFractionEnd) {
+        case (nil, nil):
+            return nil
+        case let (start?, nil):
+            return start
+        case let (nil, end?):
+            return end
+        case let (start?, end?):
+            if controls.iterations <= 1 {
+                return end
+            }
+            let clampedIteration = max(0, min(controls.iterations, iteration))
+            let t = Float(clampedIteration) / Float(controls.iterations)
+            return start + t * (end - start)
+        }
     }
 
     private func projectDensitiesToTargetAverage(_ densities: inout [Float], targetAverage: Float) {

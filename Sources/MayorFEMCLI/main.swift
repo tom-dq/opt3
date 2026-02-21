@@ -32,9 +32,10 @@ private struct CLIOptions {
     var runTopologyOptimization: Bool = false
     var topologyIterations: Int = 8
     var topologyPatchRadius: Int = 1
-    var topologyMinimumDensity: Float = 0.05
+    var topologyMinimumDensity: Float = 0.001
     var topologyMaximumDensity: Float = 1.0
-    var topologyTargetVolumeFraction: Float?
+    var topologyTargetVolumeFractionStart: Float?
+    var topologyTargetVolumeFractionEnd: Float?
     var topologyMoveLimit: Float = 0.12
     var topologyReferenceStride: Int = 1
     var topologyObjectiveTolerance: Float = 1e-5
@@ -213,7 +214,20 @@ private struct CLIOptions {
                 guard index < arguments.count, let value = Float(arguments[index]), value > 0, value <= 1 else {
                     throw FEMError.invalidBoundaryCondition("--volume-fraction requires 0 < value <= 1")
                 }
-                options.topologyTargetVolumeFraction = value
+                options.topologyTargetVolumeFractionStart = value
+                options.topologyTargetVolumeFractionEnd = value
+            case "--volume-fraction-start":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value > 0, value <= 1 else {
+                    throw FEMError.invalidBoundaryCondition("--volume-fraction-start requires 0 < value <= 1")
+                }
+                options.topologyTargetVolumeFractionStart = value
+            case "--volume-fraction-end":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value > 0, value <= 1 else {
+                    throw FEMError.invalidBoundaryCondition("--volume-fraction-end requires 0 < value <= 1")
+                }
+                options.topologyTargetVolumeFractionEnd = value
             case "--move-limit":
                 index += 1
                 guard index < arguments.count, let value = Float(arguments[index]), value > 0 else {
@@ -286,7 +300,8 @@ private struct CLIOptions {
             patchRadius: topologyPatchRadius,
             minimumDensity: topologyMinimumDensity,
             maximumDensity: topologyMaximumDensity,
-            targetVolumeFraction: topologyTargetVolumeFraction,
+            targetVolumeFractionStart: topologyTargetVolumeFractionStart,
+            targetVolumeFractionEnd: topologyTargetVolumeFractionEnd,
             moveLimit: topologyMoveLimit,
             referenceElementStride: topologyReferenceStride,
             objectiveTolerance: topologyObjectiveTolerance,
@@ -308,7 +323,9 @@ private struct CLIOptions {
                                   [--explicit-substeps N] [--relax-iters N] [--dt value] [--damping value]
                                   [--mass-density value] [--density-penalty value] [--velocity-clamp value]
                                   [--topopt] [--topopt-iters N] [--patch-radius N]
-                                  [--min-density value] [--max-density value] [--volume-fraction value]
+                                  [--min-density value] [--max-density value]
+                                  [--volume-fraction value]
+                                  [--volume-fraction-start value] [--volume-fraction-end value]
                                   [--move-limit value] [--reference-stride N]
                                   [--objective-tol value] [--density-change-tol value]
                                   [--objective compliance|mean_von_mises|max_damage|compliance_plus_von_mises]
@@ -321,6 +338,7 @@ private struct CLIOptions {
               swift run mayor-fem --solver explicit --steps 12 --disp 0.08 --backend metal
               swift run mayor-fem --benchmarks --solver explicit --backend metal
               swift run mayor-fem --topopt --topopt-iters 6 --patch-radius 1 --objective compliance --volume-fraction 0.4
+              swift run mayor-fem --topopt --topopt-iters 12 --volume-fraction-start 0.8 --volume-fraction-end 0.35
               swift run mayor-fem --visualize out/viz2d --deformation-scale 12
             """
         )
@@ -374,11 +392,11 @@ private func writeTopologyHistoryCSV(_ history: [TopologyIterationResult2D], out
     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
     let fileURL = directoryURL.appendingPathComponent("topopt_history.csv")
 
-    var lines = ["iteration,objective,average_density,total_density_change,volume_violation,updated_element_count"]
+    var lines = ["iteration,objective,average_density,target_volume_fraction,total_density_change,volume_violation,updated_element_count"]
     lines.reserveCapacity(history.count + 1)
     for item in history {
         lines.append(
-            "\(item.iteration),\(item.objective),\(item.averageDensity),\(item.totalDensityChange),\(item.volumeViolation),\(item.updatedElementCount)"
+            "\(item.iteration),\(item.objective),\(item.averageDensity),\(item.targetVolumeFraction),\(item.totalDensityChange),\(item.volumeViolation),\(item.updatedElementCount)"
         )
     }
     try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
@@ -457,10 +475,11 @@ do {
         for item in topopt.history {
             print(
                 String(
-                    format: "  iter %2d | objective=%.6e | avg_density=%.4f | total_change=%.4f | vol_violation=%.4e | updates=%d",
+                    format: "  iter %2d | objective=%.6e | avg_density=%.4f | target=%.4f | total_change=%.4f | vol_violation=%.4e | updates=%d",
                     item.iteration,
                     item.objective,
                     item.averageDensity,
+                    item.targetVolumeFraction,
                     item.totalDensityChange,
                     item.volumeViolation,
                     item.updatedElementCount

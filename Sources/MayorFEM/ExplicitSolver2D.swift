@@ -44,14 +44,16 @@ public final class ExplicitFEMSolver2D {
             self.evaluator = CPUElementEvaluator2D(
                 preparedMesh: preparedMesh,
                 material: problem.material,
-                thickness: problem.thickness
+                thickness: problem.thickness,
+                integrationScheme: problem.integrationScheme
             )
             self.backendName = "cpu-2d-explicit"
         case .metal:
             guard let metalEvaluator = try ExplicitFEMSolver2D.makeMetalEvaluator(
                 preparedMesh: preparedMesh,
                 material: problem.material,
-                thickness: problem.thickness
+                thickness: problem.thickness,
+                integrationScheme: problem.integrationScheme
             ) else {
                 throw FEMError.backendUnavailable("Metal backend requested but unavailable for 2D explicit solver.")
             }
@@ -61,7 +63,8 @@ public final class ExplicitFEMSolver2D {
             if let metalEvaluator = try ExplicitFEMSolver2D.makeMetalEvaluator(
                 preparedMesh: preparedMesh,
                 material: problem.material,
-                thickness: problem.thickness
+                thickness: problem.thickness,
+                integrationScheme: problem.integrationScheme
             ) {
                 self.evaluator = metalEvaluator
                 self.backendName = "metal-2d-explicit"
@@ -69,7 +72,8 @@ public final class ExplicitFEMSolver2D {
                 self.evaluator = CPUElementEvaluator2D(
                     preparedMesh: preparedMesh,
                     material: problem.material,
-                    thickness: problem.thickness
+                    thickness: problem.thickness,
+                    integrationScheme: problem.integrationScheme
                 )
                 self.backendName = "cpu-2d-explicit"
             }
@@ -78,7 +82,7 @@ public final class ExplicitFEMSolver2D {
 
     public func solve(
         densities rawDensities: [Float]? = nil,
-        minimumDensity: Float = 0.01
+        minimumDensity: Float = 0.001
     ) throws -> SolveResult2D {
         let elementCount = preparedMesh.elements.count
         var densities = rawDensities ?? Array(repeating: Float(1), count: elementCount)
@@ -212,8 +216,8 @@ public final class ExplicitFEMSolver2D {
         var residual = Array(repeating: Float(0), count: dofCount)
 
         for (elementIndex, element) in preparedMesh.elements.enumerated() {
-            let forceBase = elementIndex * 3
-            for localIndex in 0..<3 {
+            let forceBase = elementIndex * 4
+            for localIndex in 0..<4 {
                 let node = Int(element.nodeIDs[localIndex])
                 let force = elementEvaluation.elementNodeForces[forceBase + localIndex]
                 let dofBase = node * 2
@@ -236,9 +240,9 @@ public final class ExplicitFEMSolver2D {
         for (elementIndex, element) in preparedMesh.elements.enumerated() {
             let density = max(minimumDensity, min(1.0, densities[elementIndex]))
             let elementMass = explicitControls.massDensity * density * problem.thickness * element.area
-            let nodalMass = elementMass / 3.0
+            let nodalMass = elementMass / 4.0
 
-            for localIndex in 0..<3 {
+            for localIndex in 0..<4 {
                 let node = Int(element.nodeIDs[localIndex])
                 let dofBase = node * 2
                 masses[dofBase] += nodalMass
@@ -291,14 +295,21 @@ public final class ExplicitFEMSolver2D {
     private static func makeMetalEvaluator(
         preparedMesh: PreparedMesh2D,
         material: MaterialParameters,
-        thickness: Float
+        thickness: Float,
+        integrationScheme: IntegrationScheme2D
     ) throws -> ElementEvaluator2D? {
         #if canImport(Metal)
-        return try MetalElementEvaluator2D(preparedMesh: preparedMesh, material: material, thickness: thickness)
+        return try MetalElementEvaluator2D(
+            preparedMesh: preparedMesh,
+            material: material,
+            thickness: thickness,
+            integrationScheme: integrationScheme
+        )
         #else
         _ = preparedMesh
         _ = material
         _ = thickness
+        _ = integrationScheme
         return nil
         #endif
     }

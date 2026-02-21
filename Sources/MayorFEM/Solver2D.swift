@@ -25,7 +25,8 @@ public final class NonlinearFEMSolver2D {
         self.linearizer = CPUElementLinearizer2D(
             preparedMesh: preparedMesh,
             material: problem.material,
-            thickness: problem.thickness
+            thickness: problem.thickness,
+            integrationScheme: problem.integrationScheme
         )
 
         let prescribedFinalValues = try NonlinearFEMSolver2D.buildPrescribedMap(
@@ -49,7 +50,7 @@ public final class NonlinearFEMSolver2D {
 
         switch backendChoice {
         case .metal:
-            throw FEMError.backendUnavailable("2D solver Metal backend is not implemented yet.")
+            throw FEMError.backendUnavailable("2D implicit solver Metal backend is not implemented yet.")
         case .cpu, .auto:
             self.backendName = "cpu-2d"
         }
@@ -195,7 +196,8 @@ public final class NonlinearFEMSolver2D {
                 displacements: localDisplacements,
                 previousState: previousStates[elementIndex],
                 material: problem.material,
-                thickness: problem.thickness
+                thickness: problem.thickness,
+                integrationScheme: problem.integrationScheme
             )
 
             trialStates[elementIndex] = response.updatedState
@@ -203,7 +205,7 @@ public final class NonlinearFEMSolver2D {
             energies[elementIndex] = response.strainEnergy
 
             let nodeIDs = geometry.nodeIDs
-            for localIndex in 0..<3 {
+            for localIndex in 0..<4 {
                 let node = Int(nodeIDs[localIndex])
                 let force = response.forces[localIndex]
                 let dofBase = node * 2
@@ -224,7 +226,7 @@ public final class NonlinearFEMSolver2D {
         let nodalDisplacements = dofVectorToNodalDisplacements2D(dofs, nodeCount: preparedMesh.nodes.count)
         var builder = SparseMatrixBuilder(
             dimension: freeDOFs.count,
-            reserve: preparedMesh.elements.count * 6 * 6
+            reserve: preparedMesh.elements.count * 8 * 8
         )
 
         for elementIndex in preparedMesh.elements.indices {
@@ -237,19 +239,19 @@ public final class NonlinearFEMSolver2D {
 
             let localDOFs = localDOFIndices(for: linearization.nodeIDs)
 
-            for localRow in 0..<6 {
+            for localRow in 0..<8 {
                 let reducedRow = freeDOFToReducedIndex[localDOFs[localRow]]
                 if reducedRow < 0 {
                     continue
                 }
 
-                for localColumn in 0..<6 {
+                for localColumn in 0..<8 {
                     let reducedColumn = freeDOFToReducedIndex[localDOFs[localColumn]]
                     if reducedColumn < 0 {
                         continue
                     }
 
-                    let value = linearization.localTangent[localRow * 6 + localColumn]
+                    let value = linearization.localTangent[localRow * 8 + localColumn]
                     builder.add(row: reducedRow, column: reducedColumn, value: value)
                 }
             }
@@ -258,15 +260,17 @@ public final class NonlinearFEMSolver2D {
         return builder.build()
     }
 
-    private func localDOFIndices(for nodeIDs: SIMD3<UInt32>) -> [Int] {
+    private func localDOFIndices(for nodeIDs: SIMD4<UInt32>) -> [Int] {
         let n0 = Int(nodeIDs[0])
         let n1 = Int(nodeIDs[1])
         let n2 = Int(nodeIDs[2])
+        let n3 = Int(nodeIDs[3])
 
         return [
             n0 * 2, n0 * 2 + 1,
             n1 * 2, n1 * 2 + 1,
             n2 * 2, n2 * 2 + 1,
+            n3 * 2, n3 * 2 + 1,
         ]
     }
 
