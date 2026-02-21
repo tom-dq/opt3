@@ -141,6 +141,12 @@ func explicitMetalBenchmarksRunWhenAvailable() throws {
 }
 
 @Test
+func cpuMetalConsistencyBenchmarkPassesOrSkips() throws {
+    let result = try ExplicitLiteratureBenchmarks2D.cpuMetalConsistencyCheck()
+    #expect(result.passed)
+}
+
+@Test
 func topologyOptimizationChangesDensities() throws {
     let problem = ExampleProblems2D.displacementControlledTension(
         nx: 3,
@@ -174,11 +180,141 @@ func topologyOptimizationChangesDensities() throws {
     let result = try optimizer.optimize()
     let prepared = try problem.mesh.prepare()
 
-    #expect(result.history.count == 2)
+    #expect(result.history.count <= 2)
     #expect(result.densities.count == prepared.elements.count)
     #expect(result.history.allSatisfy { $0.objective.isFinite })
     #expect(result.densities.contains { $0 < 0.999 })
     #expect(result.finalSolve.elementDensities.count == result.densities.count)
+    #expect(result.densityHistory.count == result.history.count + 1)
+}
+
+@Test
+func topologyOptimizationRespectsTargetVolumeFraction() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 4,
+        ny: 2,
+        order: .linear,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let targetVolume: Float = 0.42
+    let controls = TopologyOptimizationControls2D(
+        iterations: 3,
+        patchRadius: 1,
+        minimumDensity: 0.1,
+        maximumDensity: 1.0,
+        targetVolumeFraction: targetVolume,
+        moveLimit: 0.15,
+        referenceElementStride: 2,
+        objectiveTolerance: 0,
+        densityChangeTolerance: 0,
+        explicitControls: ExplicitSolverControls2D(
+            substepsPerLoadStep: 16,
+            timeStep: 2e-4,
+            damping: 0.12,
+            massDensity: 2_000,
+            densityPenalty: 3.0,
+            velocityClamp: 8.0
+        )
+    )
+
+    let optimizer = try PatchTopologyOptimizer2D(
+        problem: problem,
+        backendChoice: .cpu,
+        controls: controls,
+        objective: TopologyObjectives2D.compliance
+    )
+    let result = try optimizer.optimize()
+    let averageDensity = result.densities.reduce(0, +) / Float(result.densities.count)
+
+    #expect(abs(averageDensity - targetVolume) < 2e-3)
+    #expect(result.history.allSatisfy { abs($0.volumeViolation) < 2e-3 })
+}
+
+@Test
+func topologyOptimizationCanStopEarlyOnDensityChangeTolerance() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 3,
+        ny: 1,
+        order: .linear,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let controls = TopologyOptimizationControls2D(
+        iterations: 12,
+        patchRadius: 1,
+        minimumDensity: 0.1,
+        maximumDensity: 1.0,
+        moveLimit: 0.01,
+        referenceElementStride: 3,
+        objectiveTolerance: 0,
+        densityChangeTolerance: 0.03,
+        explicitControls: ExplicitSolverControls2D(
+            substepsPerLoadStep: 12,
+            timeStep: 2e-4,
+            damping: 0.12,
+            massDensity: 2_000,
+            densityPenalty: 3.0,
+            velocityClamp: 8.0
+        )
+    )
+
+    let optimizer = try PatchTopologyOptimizer2D(
+        problem: problem,
+        backendChoice: .cpu,
+        controls: controls,
+        objective: TopologyObjectives2D.compliance
+    )
+    let result = try optimizer.optimize()
+
+    #expect(result.converged)
+    #expect(result.history.count < 12)
+    #expect(result.convergenceReason.contains("density-change tolerance"))
+}
+
+@Test
+func topologyObjectiveVariantsAreFinite() throws {
+    let problem = ExampleProblems2D.displacementControlledTension(
+        nx: 3,
+        ny: 1,
+        order: .linear,
+        endDisplacement: 0.02,
+        loadSteps: 3
+    )
+    let controls = TopologyOptimizationControls2D(
+        iterations: 1,
+        patchRadius: 1,
+        minimumDensity: 0.1,
+        maximumDensity: 1.0,
+        moveLimit: 0.1,
+        referenceElementStride: 2,
+        explicitControls: ExplicitSolverControls2D(
+            substepsPerLoadStep: 10,
+            timeStep: 2e-4,
+            damping: 0.12,
+            massDensity: 2_000,
+            densityPenalty: 3.0,
+            velocityClamp: 8.0
+        )
+    )
+
+    let objectives: [PatchObjectiveFunction2D] = [
+        TopologyObjectives2D.compliance,
+        TopologyObjectives2D.meanVonMises,
+        TopologyObjectives2D.maxDamage,
+        TopologyObjectives2D.compliancePlusMeanVonMises(weight: 1e-3),
+    ]
+
+    for objective in objectives {
+        let optimizer = try PatchTopologyOptimizer2D(
+            problem: problem,
+            backendChoice: .cpu,
+            controls: controls,
+            objective: objective
+        )
+        let result = try optimizer.optimize()
+        #expect(result.history.allSatisfy { $0.objective.isFinite })
+    }
 }
 
 @Test

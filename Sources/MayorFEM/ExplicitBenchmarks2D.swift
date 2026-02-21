@@ -3,12 +3,18 @@ import simd
 
 public enum ExplicitLiteratureBenchmarks2D {
     public static func runAll(backendChoice: ComputeBackendChoice = .cpu) throws -> [BenchmarkResult2D] {
-        [
+        var results: [BenchmarkResult2D] = [
             try belowYieldElasticityCheck(backendChoice: backendChoice),
             try aboveYieldPlasticityCheck(backendChoice: backendChoice),
             try subdivisionConsistencyCheck(backendChoice: backendChoice),
             try translationInvarianceCheck(backendChoice: backendChoice),
         ]
+
+        if backendChoice != .metal {
+            results.append(try cpuMetalConsistencyCheck())
+        }
+
+        return results
     }
 
     public static func belowYieldElasticityCheck(
@@ -171,6 +177,65 @@ public enum ExplicitLiteratureBenchmarks2D {
             massDensity: 8_000,
             densityPenalty: 1.0,
             velocityClamp: 2.0
+        )
+    }
+
+    public static func cpuMetalConsistencyCheck() throws -> BenchmarkResult2D {
+        let problem = ExampleProblems2D.displacementControlledTension(
+            nx: 6,
+            ny: 2,
+            order: .linear,
+            endDisplacement: 0.03,
+            loadSteps: 8
+        )
+
+        let controls = benchmarkControls()
+        let cpuSolve = try ExplicitFEMSolver2D(
+            problem: problem,
+            explicitControls: controls,
+            backendChoice: .cpu
+        ).solve()
+
+        let metalSolve: SolveResult2D
+        do {
+            metalSolve = try ExplicitFEMSolver2D(
+                problem: problem,
+                explicitControls: controls,
+                backendChoice: .metal
+            ).solve()
+        } catch FEMError.backendUnavailable {
+            return BenchmarkResult2D(
+                name: "Explicit 2D CPU/Metal consistency check",
+                passed: true,
+                metric: 0,
+                tolerance: 0.02,
+                detail: "Metal unavailable; consistency check skipped."
+            )
+        }
+
+        let cpuReaction = fixedFaceReaction(problem: problem, reactions: cpuSolve.reactions)
+        let metalReaction = fixedFaceReaction(problem: problem, reactions: metalSolve.reactions)
+        let reactionRelativeDifference = abs(cpuReaction - metalReaction) / max(1.0, abs(cpuReaction))
+
+        let cpuEqp = cpuSolve.elementStates.map(\.equivalentPlasticStrain).max() ?? 0
+        let metalEqp = metalSolve.elementStates.map(\.equivalentPlasticStrain).max() ?? 0
+        let eqpRelativeDifference = abs(cpuEqp - metalEqp) / max(1e-6, abs(cpuEqp))
+
+        let metric = max(reactionRelativeDifference, eqpRelativeDifference)
+        let tolerance: Float = 0.08
+
+        return BenchmarkResult2D(
+            name: "Explicit 2D CPU/Metal consistency check",
+            passed: metric <= tolerance,
+            metric: metric,
+            tolerance: tolerance,
+            detail: String(
+                format: "max_rel_diff=%.6e (reaction=%.6e, eqp=%.6e, expected <= %.6e)",
+                metric,
+                reactionRelativeDifference,
+                eqpRelativeDifference,
+                tolerance
+            )
         )
     }
 

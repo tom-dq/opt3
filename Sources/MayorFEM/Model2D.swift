@@ -320,8 +320,11 @@ public struct TopologyOptimizationControls2D {
     public var patchRadius: Int
     public var minimumDensity: Float
     public var maximumDensity: Float
+    public var targetVolumeFraction: Float?
     public var moveLimit: Float
     public var referenceElementStride: Int
+    public var objectiveTolerance: Float
+    public var densityChangeTolerance: Float
     public var explicitControls: ExplicitSolverControls2D
 
     public init(
@@ -329,16 +332,26 @@ public struct TopologyOptimizationControls2D {
         patchRadius: Int = 1,
         minimumDensity: Float = 0.05,
         maximumDensity: Float = 1.0,
+        targetVolumeFraction: Float? = nil,
         moveLimit: Float = 0.12,
         referenceElementStride: Int = 1,
+        objectiveTolerance: Float = 1e-5,
+        densityChangeTolerance: Float = 1e-4,
         explicitControls: ExplicitSolverControls2D = ExplicitSolverControls2D()
     ) {
         self.iterations = max(1, iterations)
         self.patchRadius = max(0, patchRadius)
         self.minimumDensity = max(0.001, min(1.0, minimumDensity))
         self.maximumDensity = max(self.minimumDensity, min(1.0, maximumDensity))
+        if let targetVolumeFraction {
+            self.targetVolumeFraction = max(self.minimumDensity, min(self.maximumDensity, targetVolumeFraction))
+        } else {
+            self.targetVolumeFraction = nil
+        }
         self.moveLimit = max(1e-3, moveLimit)
         self.referenceElementStride = max(1, referenceElementStride)
+        self.objectiveTolerance = max(1e-8, objectiveTolerance)
+        self.densityChangeTolerance = max(0, densityChangeTolerance)
         self.explicitControls = explicitControls
     }
 }
@@ -358,10 +371,15 @@ public struct TopologyIterationResult2D {
     public var objective: Float
     public var averageDensity: Float
     public var totalDensityChange: Float
+    public var volumeViolation: Float
+    public var updatedElementCount: Int
 }
 
 public struct TopologyOptimizationResult2D {
     public var densities: [Float]
+    public var densityHistory: [[Float]]
     public var history: [TopologyIterationResult2D]
+    public var converged: Bool
+    public var convergenceReason: String
     public var finalSolve: SolveResult2D
 }

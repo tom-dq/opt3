@@ -34,9 +34,14 @@ private struct CLIOptions {
     var topologyPatchRadius: Int = 1
     var topologyMinimumDensity: Float = 0.05
     var topologyMaximumDensity: Float = 1.0
+    var topologyTargetVolumeFraction: Float?
     var topologyMoveLimit: Float = 0.12
     var topologyReferenceStride: Int = 1
+    var topologyObjectiveTolerance: Float = 1e-5
+    var topologyDensityChangeTolerance: Float = 1e-4
+    var topologyExportEvery: Int = 0
     var objectiveName: String = "compliance"
+    var objectiveWeight: Float = 1e-3
 
     static func parse(arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -203,6 +208,12 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--max-density requires 0 < value <= 1")
                 }
                 options.topologyMaximumDensity = value
+            case "--volume-fraction":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value > 0, value <= 1 else {
+                    throw FEMError.invalidBoundaryCondition("--volume-fraction requires 0 < value <= 1")
+                }
+                options.topologyTargetVolumeFraction = value
             case "--move-limit":
                 index += 1
                 guard index < arguments.count, let value = Float(arguments[index]), value > 0 else {
@@ -215,12 +226,36 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--reference-stride requires integer > 0")
                 }
                 options.topologyReferenceStride = value
+            case "--objective-tol":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--objective-tol requires value >= 0")
+                }
+                options.topologyObjectiveTolerance = value
+            case "--density-change-tol":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--density-change-tol requires value >= 0")
+                }
+                options.topologyDensityChangeTolerance = value
+            case "--topopt-export-every":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--topopt-export-every requires integer >= 0")
+                }
+                options.topologyExportEvery = value
             case "--objective":
                 index += 1
                 guard index < arguments.count else {
                     throw FEMError.invalidBoundaryCondition("--objective requires a name")
                 }
                 options.objectiveName = arguments[index]
+            case "--objective-weight":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--objective-weight requires value >= 0")
+                }
+                options.objectiveWeight = value
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -251,8 +286,11 @@ private struct CLIOptions {
             patchRadius: topologyPatchRadius,
             minimumDensity: topologyMinimumDensity,
             maximumDensity: topologyMaximumDensity,
+            targetVolumeFraction: topologyTargetVolumeFraction,
             moveLimit: topologyMoveLimit,
             referenceElementStride: topologyReferenceStride,
+            objectiveTolerance: topologyObjectiveTolerance,
+            densityChangeTolerance: topologyDensityChangeTolerance,
             explicitControls: explicitControls()
         )
     }
@@ -270,15 +308,19 @@ private struct CLIOptions {
                                   [--explicit-substeps N] [--relax-iters N] [--dt value] [--damping value]
                                   [--mass-density value] [--density-penalty value] [--velocity-clamp value]
                                   [--topopt] [--topopt-iters N] [--patch-radius N]
-                                  [--min-density value] [--max-density value] [--move-limit value]
-                                  [--reference-stride N] [--objective compliance]
+                                  [--min-density value] [--max-density value] [--volume-fraction value]
+                                  [--move-limit value] [--reference-stride N]
+                                  [--objective-tol value] [--density-change-tol value]
+                                  [--objective compliance|mean_von_mises|max_damage|compliance_plus_von_mises]
+                                  [--objective-weight value]
+                                  [--topopt-export-every N]
                                   [--visualize output-dir] [--deformation-scale value]
                                   [--image-width W] [--image-height H]
 
             Examples:
               swift run mayor-fem --solver explicit --steps 12 --disp 0.08 --backend metal
               swift run mayor-fem --benchmarks --solver explicit --backend metal
-              swift run mayor-fem --topopt --topopt-iters 6 --patch-radius 1 --objective compliance
+              swift run mayor-fem --topopt --topopt-iters 6 --patch-radius 1 --objective compliance --volume-fraction 0.4
               swift run mayor-fem --visualize out/viz2d --deformation-scale 12
             """
         )
@@ -304,6 +346,40 @@ private func writeDensityCSV(_ densities: [Float], outputDirectory: String) thro
     lines.reserveCapacity(densities.count + 1)
     for (index, density) in densities.enumerated() {
         lines.append("\(index),\(density)")
+    }
+    try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
+}
+
+private func writeDensityHistoryCSVs(_ densityHistory: [[Float]], outputDirectory: String) throws {
+    let root = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let historyDirectory = root.appendingPathComponent("density_history", isDirectory: true)
+    try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+
+    for (iteration, densities) in densityHistory.enumerated() {
+        let fileURL = historyDirectory.appendingPathComponent(
+            String(format: "densities_iter_%04d.csv", iteration)
+        )
+        var lines = ["element_id,density"]
+        lines.reserveCapacity(densities.count + 1)
+        for (index, density) in densities.enumerated() {
+            lines.append("\(index),\(density)")
+        }
+        try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+}
+
+private func writeTopologyHistoryCSV(_ history: [TopologyIterationResult2D], outputDirectory: String) throws {
+    let directoryURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let fileURL = directoryURL.appendingPathComponent("topopt_history.csv")
+
+    var lines = ["iteration,objective,average_density,total_density_change,volume_violation,updated_element_count"]
+    lines.reserveCapacity(history.count + 1)
+    for item in history {
+        lines.append(
+            "\(item.iteration),\(item.objective),\(item.averageDensity),\(item.totalDensityChange),\(item.volumeViolation),\(item.updatedElementCount)"
+        )
     }
     try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
 }
@@ -345,14 +421,26 @@ do {
     )
 
     let result: SolveResult2D
+    var topologyResult: TopologyOptimizationResult2D?
 
     if options.runTopologyOptimization {
+        if options.solverMode != .explicitDynamics {
+            throw FEMError.invalidBoundaryCondition("Topology optimization currently requires --solver explicit.")
+        }
         let objective: PatchObjectiveFunction2D
         switch options.objectiveName {
         case "compliance":
             objective = TopologyObjectives2D.compliance
+        case "mean_von_mises":
+            objective = TopologyObjectives2D.meanVonMises
+        case "max_damage":
+            objective = TopologyObjectives2D.maxDamage
+        case "compliance_plus_von_mises":
+            objective = TopologyObjectives2D.compliancePlusMeanVonMises(weight: options.objectiveWeight)
         default:
-            throw FEMError.invalidBoundaryCondition("--objective currently supports: compliance")
+            throw FEMError.invalidBoundaryCondition(
+                "--objective supports: compliance|mean_von_mises|max_damage|compliance_plus_von_mises"
+            )
         }
 
         let optimizer = try PatchTopologyOptimizer2D(
@@ -363,19 +451,24 @@ do {
         )
         let topopt = try optimizer.optimize()
         result = topopt.finalSolve
+        topologyResult = topopt
 
         print("Topology optimization history:")
         for item in topopt.history {
             print(
                 String(
-                    format: "  iter %2d | objective=%.6e | avg_density=%.4f | total_change=%.4f",
+                    format: "  iter %2d | objective=%.6e | avg_density=%.4f | total_change=%.4f | vol_violation=%.4e | updates=%d",
                     item.iteration,
                     item.objective,
                     item.averageDensity,
-                    item.totalDensityChange
+                    item.totalDensityChange,
+                    item.volumeViolation,
+                    item.updatedElementCount
                 )
             )
         }
+        print("Topology converged: \(topopt.converged)")
+        print("Topology convergence reason: \(topopt.convergenceReason)")
     } else {
         switch options.solverMode {
         case .implicitNewton:
@@ -437,6 +530,55 @@ do {
         )
 
         try writeDensityCSV(result.elementDensities, outputDirectory: visualizationDirectory)
+        if let topopt = topologyResult {
+            try writeTopologyHistoryCSV(topopt.history, outputDirectory: visualizationDirectory)
+            try writeDensityHistoryCSVs(topopt.densityHistory, outputDirectory: visualizationDirectory)
+
+            if options.topologyExportEvery > 0 {
+                let iterationsRoot = URL(fileURLWithPath: visualizationDirectory, isDirectory: true)
+                    .appendingPathComponent("topopt_iterations", isDirectory: true)
+                try FileManager.default.createDirectory(at: iterationsRoot, withIntermediateDirectories: true)
+
+                for (iteration, densities) in topopt.densityHistory.enumerated() {
+                    let isFinal = iteration == topopt.densityHistory.count - 1
+                    if !isFinal && iteration % options.topologyExportEvery != 0 {
+                        continue
+                    }
+
+                    let solver = try ExplicitFEMSolver2D(
+                        problem: problem,
+                        explicitControls: options.explicitControls(),
+                        backendChoice: options.backend
+                    )
+                    let iterationResult = try solver.solve(
+                        densities: densities,
+                        minimumDensity: options.topologyMinimumDensity
+                    )
+                    let iterationDir = iterationsRoot.appendingPathComponent(
+                        String(format: "iter_%04d", iteration),
+                        isDirectory: true
+                    )
+                    let iterationVtkDir = iterationDir.appendingPathComponent("vtk", isDirectory: true)
+                    let iterationPngDir = iterationDir.appendingPathComponent("png", isDirectory: true)
+
+                    _ = try FEMVisualization.writeVTKSeries(
+                        problem: problem,
+                        result: iterationResult,
+                        outputDirectory: iterationVtkDir.path,
+                        deformationScale: options.deformationScale
+                    )
+                    _ = try FEMVisualization.writePNGSeries(
+                        problem: problem,
+                        result: iterationResult,
+                        outputDirectory: iterationPngDir.path,
+                        deformationScale: options.deformationScale,
+                        imageWidth: options.imageWidth,
+                        imageHeight: options.imageHeight
+                    )
+                    try writeDensityCSV(iterationResult.elementDensities, outputDirectory: iterationDir.path)
+                }
+            }
+        }
 
         print("Visualization VTK files written: \(vtkFiles.count)")
         print("Visualization PNG files written: \(pngFiles.count)")

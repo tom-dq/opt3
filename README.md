@@ -18,7 +18,8 @@ MayorFEM is a 2D nonlinear finite element prototype focused on small-model speed
   - Density design variables per element
   - Reference element toggled on/off in local patches
   - Arbitrary patch objective callback API
-  - Compliance objective provided out of the box
+  - Built-in objectives: `compliance`, `mean_von_mises`, `max_damage`, `compliance_plus_von_mises`
+  - Target volume-fraction projection and convergence stopping controls
 - Visualization export per load step:
   - VTK series (`.vtk` + `series.pvd`)
   - PNG frame series
@@ -79,6 +80,7 @@ Current benchmark checks include:
 - Above-yield plastic response (Belytschko-style loading path)
 - Subdivision consistency
 - Translational invariance (Bonet/Wood-style patch anchor)
+- CPU vs Metal consistency (when Metal is available)
 
 ### Topology Optimization
 
@@ -87,11 +89,19 @@ swift run mayor-fem \
   --topopt --solver explicit --backend metal \
   --steps 8 --disp 0.05 --nx 6 --ny 2 \
   --topopt-iters 8 --patch-radius 1 \
-  --min-density 0.05 --max-density 1.0 \
+  --min-density 0.05 --max-density 1.0 --volume-fraction 0.40 \
   --move-limit 0.12 --reference-stride 1 \
-  --objective compliance \
+  --objective compliance_plus_von_mises --objective-weight 0.001 \
+  --objective-tol 1e-5 --density-change-tol 1e-4 \
+  --topopt-export-every 2 \
   --visualize out/topopt
 ```
+
+Topopt outputs in `--visualize` directory include:
+
+- `topopt_history.csv`
+- `density_history/densities_iter_XXXX.csv`
+- optional per-iteration solve exports under `topopt_iterations/` when `--topopt-export-every > 0`
 
 ## Tests
 
