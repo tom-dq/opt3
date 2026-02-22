@@ -398,3 +398,24 @@ func visualizationOutputsVTKAndPNGSeriesFromExplicitSolve() throws {
 
     try? FileManager.default.removeItem(at: root)
 }
+
+@Test
+func stabilizationControlsClampAndProfilesExist() throws {
+    let controls = ExplicitStabilizationControls2D(
+        residualBlend: 2.0,
+        velocitySmoothing: -1.0,
+        displacementSmoothing: 1.5,
+        smoothingPasses: 0
+    )
+    #expect(controls.residualBlend >= 0 && controls.residualBlend <= 0.98)
+    #expect(controls.velocitySmoothing == 0)
+    #expect(controls.displacementSmoothing <= 0.95)
+    #expect(controls.smoothingPasses == 1)
+
+    let profiles = StabilizationBenchmarks2D.defaultProfiles()
+    #expect(profiles.count >= 5)
+    #expect(profiles.contains { $0.name == "none" })
+
+    let cases = StabilizationBenchmarks2D.defaultCases()
+    #expect(cases.count >= 2)
+}

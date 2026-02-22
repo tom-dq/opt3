@@ -16,7 +16,9 @@ public final class ExplicitFEMSolver2D {
     private let backendName: String
     private let dofCount: Int
     private let freeDOFs: [Int]
+    private let freeDOFMask: [Bool]
     private let prescribedFinalValues: [Int: Float]
+    private let nodeAdjacency: [[Int]]
 
     public init(
         problem: FEMProblem2D,
@@ -35,9 +37,11 @@ public final class ExplicitFEMSolver2D {
 
         let prescribedSet = Set(prescribedFinalValues.keys)
         self.freeDOFs = (0..<dofCount).filter { !prescribedSet.contains($0) }
+        self.freeDOFMask = (0..<dofCount).map { !prescribedSet.contains($0) }
         if freeDOFs.isEmpty {
             throw FEMError.noFreeDOFs
         }
+        self.nodeAdjacency = ExplicitFEMSolver2D.buildNodeAdjacency(preparedMesh: preparedMesh)
 
         switch backendChoice {
         case .cpu:
@@ -100,6 +104,7 @@ public final class ExplicitFEMSolver2D {
         var states = Array(repeating: ElementState.zero, count: elementCount)
         var elementVonMises = Array(repeating: Float(0), count: elementCount)
         var elementEnergies = Array(repeating: Float(0), count: elementCount)
+        var previousResidual = Array(repeating: Float(0), count: dofCount)
 
         var stepHistory: [StepResult2D] = []
         var stepSnapshots: [StepSnapshot2D] = []
@@ -111,6 +116,9 @@ public final class ExplicitFEMSolver2D {
         let substeps = explicitControls.substepsPerLoadStep
         let relaxIterations = explicitControls.relaxationIterationsPerSubstep
         let totalSubsteps = problem.controls.loadSteps * substeps
+        let stabilization = explicitControls.stabilization
+        let residualBlend = stabilization.residualBlend
+        let residualKeep = 1.0 - residualBlend
 
         for step in 1...problem.controls.loadSteps {
             for localSubstep in 1...substeps {
@@ -127,12 +135,43 @@ public final class ExplicitFEMSolver2D {
                         minimumDensity: clampedMinimumDensity
                     )
 
+                    var filteredResidual = preEvaluation.residual
+                    if residualBlend > 0 {
+                        for dof in freeDOFs {
+                            filteredResidual[dof] = residualKeep * filteredResidual[dof] + residualBlend * previousResidual[dof]
+                        }
+                    }
+                    previousResidual = filteredResidual
+
+                    var displacementIncrements = Array(repeating: Float(0), count: dofCount)
                     for dof in freeDOFs {
                         let mass = max(1e-8, masses[dof])
-                        var displacementIncrement = -dt * preEvaluation.residual[dof] / mass
+                        var displacementIncrement = -dt * filteredResidual[dof] / mass
                         displacementIncrement *= (1.0 - dampingFactor)
+                        displacementIncrements[dof] = displacementIncrement
+                    }
+
+                    if stabilization.velocitySmoothing > 0 {
+                        smoothNodalDOFValues(
+                            values: &displacementIncrements,
+                            alpha: stabilization.velocitySmoothing,
+                            passes: stabilization.smoothingPasses
+                        )
+                    }
+
+                    for dof in freeDOFs {
+                        var displacementIncrement = displacementIncrements[dof]
                         displacementIncrement = min(displacementClamp, max(-displacementClamp, displacementIncrement))
                         dofs[dof] += displacementIncrement
+                    }
+
+                    if stabilization.displacementSmoothing > 0 {
+                        smoothNodalDOFValues(
+                            values: &dofs,
+                            alpha: stabilization.displacementSmoothing,
+                            passes: stabilization.smoothingPasses
+                        )
+                        applyPrescribedValues(&dofs, prescribed: prescribed)
                     }
                 }
 
@@ -312,5 +351,65 @@ public final class ExplicitFEMSolver2D {
         _ = integrationScheme
         return nil
         #endif
+    }
+
+    private func smoothNodalDOFValues(values: inout [Float], alpha: Float, passes: Int) {
+        guard alpha > 0 else {
+            return
+        }
+
+        let clampedAlpha = max(0, min(0.95, alpha))
+        let nodeCount = preparedMesh.nodes.count
+
+        for _ in 0..<max(1, passes) {
+            var next = values
+            for node in 0..<nodeCount {
+                let neighbors = nodeAdjacency[node]
+                if neighbors.isEmpty {
+                    continue
+                }
+
+                let xDOF = node * 2
+                if freeDOFMask[xDOF] {
+                    var average: Float = 0
+                    for neighbor in neighbors {
+                        average += values[neighbor * 2]
+                    }
+                    average /= Float(neighbors.count)
+                    next[xDOF] = (1.0 - clampedAlpha) * values[xDOF] + clampedAlpha * average
+                }
+
+                let yDOF = xDOF + 1
+                if freeDOFMask[yDOF] {
+                    var average: Float = 0
+                    for neighbor in neighbors {
+                        average += values[neighbor * 2 + 1]
+                    }
+                    average /= Float(neighbors.count)
+                    next[yDOF] = (1.0 - clampedAlpha) * values[yDOF] + clampedAlpha * average
+                }
+            }
+            values = next
+        }
+    }
+
+    private static func buildNodeAdjacency(preparedMesh: PreparedMesh2D) -> [[Int]] {
+        var adjacency = Array(repeating: Set<Int>(), count: preparedMesh.nodes.count)
+        for element in preparedMesh.elements {
+            let n0 = Int(element.nodeIDs[0])
+            let n1 = Int(element.nodeIDs[1])
+            let n2 = Int(element.nodeIDs[2])
+            let n3 = Int(element.nodeIDs[3])
+
+            adjacency[n0].insert(n1)
+            adjacency[n0].insert(n3)
+            adjacency[n1].insert(n0)
+            adjacency[n1].insert(n2)
+            adjacency[n2].insert(n1)
+            adjacency[n2].insert(n3)
+            adjacency[n3].insert(n0)
+            adjacency[n3].insert(n2)
+        }
+        return adjacency.map { $0.sorted() }
     }
 }

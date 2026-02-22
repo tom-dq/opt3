@@ -230,6 +230,7 @@ public struct SolveResult2D {
 }
 
 public struct ExplicitSolverControls2D {
+    public var stabilization: ExplicitStabilizationControls2D
     public var substepsPerLoadStep: Int
     public var relaxationIterationsPerSubstep: Int
     public var timeStep: Float
@@ -239,6 +240,7 @@ public struct ExplicitSolverControls2D {
     public var velocityClamp: Float
 
     public init(
+        stabilization: ExplicitStabilizationControls2D = ExplicitStabilizationControls2D(),
         substepsPerLoadStep: Int = 48,
         relaxationIterationsPerSubstep: Int = 6,
         timeStep: Float = 4e-4,
@@ -247,6 +249,7 @@ public struct ExplicitSolverControls2D {
         densityPenalty: Float = 3.0,
         velocityClamp: Float = 25.0
     ) {
+        self.stabilization = stabilization
         self.substepsPerLoadStep = max(1, substepsPerLoadStep)
         self.relaxationIterationsPerSubstep = max(1, relaxationIterationsPerSubstep)
         self.timeStep = max(1e-8, timeStep)
@@ -254,6 +257,25 @@ public struct ExplicitSolverControls2D {
         self.massDensity = max(1e-6, massDensity)
         self.densityPenalty = max(1.0, densityPenalty)
         self.velocityClamp = max(1e-4, velocityClamp)
+    }
+}
+
+public struct ExplicitStabilizationControls2D {
+    public var residualBlend: Float
+    public var velocitySmoothing: Float
+    public var displacementSmoothing: Float
+    public var smoothingPasses: Int
+
+    public init(
+        residualBlend: Float = 0,
+        velocitySmoothing: Float = 0,
+        displacementSmoothing: Float = 0,
+        smoothingPasses: Int = 1
+    ) {
+        self.residualBlend = max(0, min(0.98, residualBlend))
+        self.velocitySmoothing = max(0, min(0.95, velocitySmoothing))
+        self.displacementSmoothing = max(0, min(0.95, displacementSmoothing))
+        self.smoothingPasses = max(1, smoothingPasses)
     }
 }
 

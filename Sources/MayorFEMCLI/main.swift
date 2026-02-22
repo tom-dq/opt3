@@ -28,8 +28,13 @@ private struct CLIOptions {
     var explicitMassDensity: Float = 1_250.0
     var explicitDensityPenalty: Float = 3.0
     var explicitVelocityClamp: Float = 25.0
+    var stabilizationResidualBlend: Float = 0.0
+    var stabilizationVelocitySmoothing: Float = 0.0
+    var stabilizationDisplacementSmoothing: Float = 0.0
+    var stabilizationSmoothingPasses: Int = 1
 
     var runTopologyOptimization: Bool = false
+    var runStabilizationBenchmark: Bool = false
     var topologyIterations: Int = 8
     var topologyPatchRadius: Int = 1
     var topologyMinimumDensity: Float = 0.001
@@ -183,6 +188,32 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--velocity-clamp requires a positive value")
                 }
                 options.explicitVelocityClamp = value
+            case "--residual-blend":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0, value < 1 else {
+                    throw FEMError.invalidBoundaryCondition("--residual-blend requires 0 <= value < 1")
+                }
+                options.stabilizationResidualBlend = value
+            case "--velocity-smoothing":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0, value < 1 else {
+                    throw FEMError.invalidBoundaryCondition("--velocity-smoothing requires 0 <= value < 1")
+                }
+                options.stabilizationVelocitySmoothing = value
+            case "--displacement-smoothing":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0, value < 1 else {
+                    throw FEMError.invalidBoundaryCondition("--displacement-smoothing requires 0 <= value < 1")
+                }
+                options.stabilizationDisplacementSmoothing = value
+            case "--smoothing-passes":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value > 0 else {
+                    throw FEMError.invalidBoundaryCondition("--smoothing-passes requires integer > 0")
+                }
+                options.stabilizationSmoothingPasses = value
+            case "--stabilization-bench":
+                options.runStabilizationBenchmark = true
             case "--topopt":
                 options.runTopologyOptimization = true
             case "--topopt-iters":
@@ -282,8 +313,18 @@ private struct CLIOptions {
         return options
     }
 
+    func stabilizationControls() -> ExplicitStabilizationControls2D {
+        ExplicitStabilizationControls2D(
+            residualBlend: stabilizationResidualBlend,
+            velocitySmoothing: stabilizationVelocitySmoothing,
+            displacementSmoothing: stabilizationDisplacementSmoothing,
+            smoothingPasses: stabilizationSmoothingPasses
+        )
+    }
+
     func explicitControls() -> ExplicitSolverControls2D {
         ExplicitSolverControls2D(
+            stabilization: stabilizationControls(),
             substepsPerLoadStep: explicitSubsteps,
             relaxationIterationsPerSubstep: explicitRelaxIterations,
             timeStep: explicitTimeStep,
@@ -322,6 +363,9 @@ private struct CLIOptions {
                                   [--benchmarks]
                                   [--explicit-substeps N] [--relax-iters N] [--dt value] [--damping value]
                                   [--mass-density value] [--density-penalty value] [--velocity-clamp value]
+                                  [--residual-blend value] [--velocity-smoothing value]
+                                  [--displacement-smoothing value] [--smoothing-passes N]
+                                  [--stabilization-bench]
                                   [--topopt] [--topopt-iters N] [--patch-radius N]
                                   [--min-density value] [--max-density value]
                                   [--volume-fraction value]
@@ -337,6 +381,7 @@ private struct CLIOptions {
             Examples:
               swift run mayor-fem --solver explicit --steps 12 --disp 0.08 --backend metal
               swift run mayor-fem --benchmarks --solver explicit --backend metal
+              swift run mayor-fem --stabilization-bench --backend cpu --visualize out/stabilization_sweep
               swift run mayor-fem --topopt --topopt-iters 6 --patch-radius 1 --objective compliance --volume-fraction 0.4
               swift run mayor-fem --topopt --topopt-iters 12 --volume-fraction-start 0.8 --volume-fraction-end 0.35
               swift run mayor-fem --visualize out/viz2d --deformation-scale 12
@@ -402,8 +447,62 @@ private func writeTopologyHistoryCSV(_ history: [TopologyIterationResult2D], out
     try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
 }
 
+private func writeStabilizationBenchmarkCSV(_ sweep: StabilizationBenchmarkSweep2D, outputDirectory: String) throws {
+    let directoryURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let fileURL = directoryURL.appendingPathComponent("stabilization_benchmark.csv")
+
+    var lines = [
+        "case,profile,roughness_index,refinement_mismatch,final_residual_norm,max_displacement,runtime_seconds,roughness_reduction_percent,mismatch_reduction_percent,combined_effectiveness_percent"
+    ]
+    lines.reserveCapacity(sweep.rows.count + 1)
+    for row in sweep.rows {
+        lines.append(
+            "\(row.caseName),\(row.profileName),\(row.roughnessIndex),\(row.refinementMismatch),\(row.finalResidualNorm),\(row.maxDisplacementMagnitude),\(row.runtimeSeconds),\(row.roughnessReductionPercent),\(row.mismatchReductionPercent),\(row.combinedEffectivenessPercent)"
+        )
+    }
+    try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
+}
+
+private func printStabilizationBenchmarkTable(_ sweep: StabilizationBenchmarkSweep2D) {
+    print("| Case | Profile | Roughness | Refinement Mismatch | Residual | Max | Runtime (s) | Roughness Δ% | Mismatch Δ% | Combined Δ% |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for row in sweep.rows {
+        print(
+            String(
+                format: "| %@ | %@ | %.6f | %.6f | %.4e | %.5f | %.2f | %.2f | %.2f | %.2f |",
+                row.caseName,
+                row.profileName,
+                row.roughnessIndex,
+                row.refinementMismatch,
+                row.finalResidualNorm,
+                row.maxDisplacementMagnitude,
+                row.runtimeSeconds,
+                row.roughnessReductionPercent,
+                row.mismatchReductionPercent,
+                row.combinedEffectivenessPercent
+            )
+        )
+    }
+}
+
 do {
     let options = try CLIOptions.parse(arguments: CommandLine.arguments)
+
+    if options.runStabilizationBenchmark {
+        guard options.solverMode == .explicitDynamics else {
+            throw FEMError.invalidBoundaryCondition("--stabilization-bench requires --solver explicit.")
+        }
+
+        let sweep = try StabilizationBenchmarks2D.runSweep(backendChoice: options.backend)
+        print("Stabilization benchmark sweep (lower roughness/mismatch is better):")
+        printStabilizationBenchmarkTable(sweep)
+        if let visualizationDirectory = options.visualizationDirectory {
+            try writeStabilizationBenchmarkCSV(sweep, outputDirectory: visualizationDirectory)
+            print("Stabilization benchmark CSV: \(visualizationDirectory)/stabilization_benchmark.csv")
+        }
+        exit(0)
+    }
 
     if options.runBenchmarks {
         let results: [BenchmarkResult2D]
