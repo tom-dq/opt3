@@ -64,15 +64,25 @@ public final class ExplicitFEMSolver2D {
             self.evaluator = metalEvaluator
             self.backendName = "metal-2d-explicit"
         case .auto:
-            if let metalEvaluator = try ExplicitFEMSolver2D.makeMetalEvaluator(
-                preparedMesh: preparedMesh,
-                material: problem.material,
-                thickness: problem.thickness,
-                integrationScheme: problem.integrationScheme
-            ) {
-                self.evaluator = metalEvaluator
-                self.backendName = "metal-2d-explicit"
-            } else {
+            do {
+                if let metalEvaluator = try ExplicitFEMSolver2D.makeMetalEvaluator(
+                    preparedMesh: preparedMesh,
+                    material: problem.material,
+                    thickness: problem.thickness,
+                    integrationScheme: problem.integrationScheme
+                ) {
+                    self.evaluator = metalEvaluator
+                    self.backendName = "metal-2d-explicit"
+                } else {
+                    self.evaluator = CPUElementEvaluator2D(
+                        preparedMesh: preparedMesh,
+                        material: problem.material,
+                        thickness: problem.thickness,
+                        integrationScheme: problem.integrationScheme
+                    )
+                    self.backendName = "cpu-2d-explicit"
+                }
+            } catch {
                 self.evaluator = CPUElementEvaluator2D(
                     preparedMesh: preparedMesh,
                     material: problem.material,

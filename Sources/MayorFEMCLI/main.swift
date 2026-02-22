@@ -19,6 +19,7 @@ private struct CLIOptions {
     var nx: Int = 8
     var ny: Int = 3
     var order: ElementOrder2D = .linear
+    var integrationScheme: IntegrationScheme2D = .full
     var subdivisionLevels: Int = 0
 
     var explicitSubsteps: Int = 48
@@ -35,6 +36,7 @@ private struct CLIOptions {
 
     var runTopologyOptimization: Bool = false
     var runStabilizationBenchmark: Bool = false
+    var runTopologyLiteratureBenchmark: Bool = false
     var topologyIterations: Int = 8
     var topologyPatchRadius: Int = 1
     var topologyMinimumDensity: Float = 0.001
@@ -43,11 +45,25 @@ private struct CLIOptions {
     var topologyTargetVolumeFractionEnd: Float?
     var topologyMoveLimit: Float = 0.12
     var topologyReferenceStride: Int = 1
+    var topologyMaxReferenceEvaluations: Int?
     var topologyObjectiveTolerance: Float = 1e-5
     var topologyDensityChangeTolerance: Float = 1e-4
     var topologyExportEvery: Int = 0
     var objectiveName: String = "compliance"
     var objectiveWeight: Float = 1e-3
+    var convoyWorkers: Int = max(1, ProcessInfo.processInfo.activeProcessorCount / 2)
+    var literatureCaseFilter: Set<String> = []
+    var literatureLoads: [Float] = [5, 10, 15, 20]
+    var literatureLBracketNX: Int = 24
+    var literatureLBracketNY: Int = 24
+    var literatureUBracketNX: Int = 28
+    var literatureUBracketNY: Int = 20
+    var literatureCantileverNX: Int = 36
+    var literatureCantileverNY: Int = 12
+    var literatureStressWeight: Float = 0.05
+    var literaturePlasticWeight: Float = 0
+    var literatureDamageWeight: Float = 0
+    var literatureDensityVarianceWeight: Float = 12
 
     static func parse(arguments: [String]) throws -> CLIOptions {
         var options = CLIOptions()
@@ -140,6 +156,17 @@ private struct CLIOptions {
                 default:
                     throw FEMError.invalidBoundaryCondition("--order requires linear|quadratic")
                 }
+            case "--integration":
+                index += 1
+                guard index < arguments.count else {
+                    throw FEMError.invalidBoundaryCondition("--integration requires full|reduced")
+                }
+                switch arguments[index] {
+                case "full": options.integrationScheme = .full
+                case "reduced": options.integrationScheme = .reduced
+                default:
+                    throw FEMError.invalidBoundaryCondition("--integration requires full|reduced")
+                }
             case "--subdivide":
                 index += 1
                 guard index < arguments.count, let value = Int(arguments[index]), value >= 0 else {
@@ -214,6 +241,8 @@ private struct CLIOptions {
                 options.stabilizationSmoothingPasses = value
             case "--stabilization-bench":
                 options.runStabilizationBenchmark = true
+            case "--topopt-literature-bench":
+                options.runTopologyLiteratureBenchmark = true
             case "--topopt":
                 options.runTopologyOptimization = true
             case "--topopt-iters":
@@ -271,6 +300,12 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--reference-stride requires integer > 0")
                 }
                 options.topologyReferenceStride = value
+            case "--max-reference-evals":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value > 0 else {
+                    throw FEMError.invalidBoundaryCondition("--max-reference-evals requires integer > 0")
+                }
+                options.topologyMaxReferenceEvaluations = value
             case "--objective-tol":
                 index += 1
                 guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
@@ -301,6 +336,98 @@ private struct CLIOptions {
                     throw FEMError.invalidBoundaryCondition("--objective-weight requires value >= 0")
                 }
                 options.objectiveWeight = value
+            case "--convoy-workers":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value > 0 else {
+                    throw FEMError.invalidBoundaryCondition("--convoy-workers requires integer > 0")
+                }
+                options.convoyWorkers = value
+            case "--literature-cases":
+                index += 1
+                guard index < arguments.count else {
+                    throw FEMError.invalidBoundaryCondition("--literature-cases requires comma-separated ids")
+                }
+                let ids = arguments[index]
+                    .split(separator: ",")
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                options.literatureCaseFilter = Set(ids)
+            case "--literature-loads":
+                index += 1
+                guard index < arguments.count else {
+                    throw FEMError.invalidBoundaryCondition("--literature-loads requires comma-separated positive values")
+                }
+                let parsedLoads = try arguments[index]
+                    .split(separator: ",")
+                    .map { raw -> Float in
+                        guard let value = Float(raw.trimmingCharacters(in: .whitespacesAndNewlines)), value > 0 else {
+                            throw FEMError.invalidBoundaryCondition("--literature-loads requires comma-separated positive values")
+                        }
+                        return value
+                    }
+                if !parsedLoads.isEmpty {
+                    options.literatureLoads = parsedLoads
+                }
+            case "--literature-lbracket-nx":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 8 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-lbracket-nx requires integer >= 8")
+                }
+                options.literatureLBracketNX = value
+            case "--literature-lbracket-ny":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 8 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-lbracket-ny requires integer >= 8")
+                }
+                options.literatureLBracketNY = value
+            case "--literature-ubracket-nx":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 8 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-ubracket-nx requires integer >= 8")
+                }
+                options.literatureUBracketNX = value
+            case "--literature-ubracket-ny":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 8 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-ubracket-ny requires integer >= 8")
+                }
+                options.literatureUBracketNY = value
+            case "--literature-cantilever-nx":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 8 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-cantilever-nx requires integer >= 8")
+                }
+                options.literatureCantileverNX = value
+            case "--literature-cantilever-ny":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]), value >= 4 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-cantilever-ny requires integer >= 4")
+                }
+                options.literatureCantileverNY = value
+            case "--literature-stress-weight":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-stress-weight requires value >= 0")
+                }
+                options.literatureStressWeight = value
+            case "--literature-plastic-weight":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-plastic-weight requires value >= 0")
+                }
+                options.literaturePlasticWeight = value
+            case "--literature-damage-weight":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-damage-weight requires value >= 0")
+                }
+                options.literatureDamageWeight = value
+            case "--literature-density-variance-weight":
+                index += 1
+                guard index < arguments.count, let value = Float(arguments[index]), value >= 0 else {
+                    throw FEMError.invalidBoundaryCondition("--literature-density-variance-weight requires value >= 0")
+                }
+                options.literatureDensityVarianceWeight = value
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -345,9 +472,46 @@ private struct CLIOptions {
             targetVolumeFractionEnd: topologyTargetVolumeFractionEnd,
             moveLimit: topologyMoveLimit,
             referenceElementStride: topologyReferenceStride,
+            maxReferenceEvaluationsPerIteration: topologyMaxReferenceEvaluations,
             objectiveTolerance: topologyObjectiveTolerance,
             densityChangeTolerance: topologyDensityChangeTolerance,
             explicitControls: explicitControls()
+        )
+    }
+
+    func topologyLiteratureControls() -> TopologyLiteratureBenchmarkControls2D {
+        let literatureIterations = topologyIterations == 8 ? 4 : topologyIterations
+        let literatureStride = topologyReferenceStride == 1 ? 12 : topologyReferenceStride
+        return TopologyLiteratureBenchmarkControls2D(
+            order: order,
+            integrationScheme: integrationScheme,
+            subdivisionLevels: subdivisionLevels,
+            iterations: literatureIterations,
+            patchRadius: topologyPatchRadius,
+            minimumDensity: topologyMinimumDensity,
+            maximumDensity: topologyMaximumDensity,
+            moveLimit: topologyMoveLimit,
+            referenceElementStride: literatureStride,
+            maxReferenceEvaluationsPerIteration: topologyMaxReferenceEvaluations ?? 24,
+            objectiveTolerance: topologyObjectiveTolerance,
+            densityChangeTolerance: topologyDensityChangeTolerance,
+            targetVolumeFractionStart: topologyTargetVolumeFractionStart,
+            targetVolumeFractionEnd: topologyTargetVolumeFractionEnd,
+            explicitControls: explicitControls(),
+            convoyWorkers: convoyWorkers,
+            caseIDs: literatureCaseFilter.isEmpty ? nil : literatureCaseFilter,
+            liangLoads: literatureLoads,
+            lBracketNX: literatureLBracketNX,
+            lBracketNY: literatureLBracketNY,
+            uBracketNX: literatureUBracketNX,
+            uBracketNY: literatureUBracketNY,
+            cantileverNX: literatureCantileverNX,
+            cantileverNY: literatureCantileverNY,
+            loadSteps: steps,
+            stressWeight: literatureStressWeight,
+            plasticWeight: literaturePlasticWeight,
+            damageWeight: literatureDamageWeight,
+            densityVarianceWeight: literatureDensityVarianceWeight
         )
     }
 
@@ -359,20 +523,31 @@ private struct CLIOptions {
             Usage:
               swift run mayor-fem [--solver explicit|implicit] [--steps N] [--disp value]
                                   [--backend auto|metal|cpu]
-                                  [--nx N] [--ny N] [--order linear|quadratic] [--subdivide L]
+                                  [--nx N] [--ny N] [--order linear|quadratic]
+                                  [--integration full|reduced] [--subdivide L]
                                   [--benchmarks]
                                   [--explicit-substeps N] [--relax-iters N] [--dt value] [--damping value]
                                   [--mass-density value] [--density-penalty value] [--velocity-clamp value]
                                   [--residual-blend value] [--velocity-smoothing value]
                                   [--displacement-smoothing value] [--smoothing-passes N]
                                   [--stabilization-bench]
+                                  [--topopt-literature-bench] [--convoy-workers N]
+                                  [--literature-cases id1,id2] [--literature-loads l1,l2,...]
+                                  [--literature-lbracket-nx N] [--literature-lbracket-ny N]
+                                  [--literature-ubracket-nx N] [--literature-ubracket-ny N]
+                                  [--literature-cantilever-nx N] [--literature-cantilever-ny N]
+                                  [--literature-stress-weight value]
+                                  [--literature-plastic-weight value]
+                                  [--literature-damage-weight value]
+                                  [--literature-density-variance-weight value]
                                   [--topopt] [--topopt-iters N] [--patch-radius N]
                                   [--min-density value] [--max-density value]
                                   [--volume-fraction value]
                                   [--volume-fraction-start value] [--volume-fraction-end value]
                                   [--move-limit value] [--reference-stride N]
+                                  [--max-reference-evals N]
                                   [--objective-tol value] [--density-change-tol value]
-                                  [--objective compliance|mean_von_mises|max_damage|compliance_plus_von_mises]
+                                  [--objective compliance|mean_von_mises|max_damage|compliance_plus_von_mises|compliance_plus_plasticity]
                                   [--objective-weight value]
                                   [--topopt-export-every N]
                                   [--visualize output-dir] [--deformation-scale value]
@@ -384,6 +559,7 @@ private struct CLIOptions {
               swift run mayor-fem --stabilization-bench --backend cpu --visualize out/stabilization_sweep
               swift run mayor-fem --topopt --topopt-iters 6 --patch-radius 1 --objective compliance --volume-fraction 0.4
               swift run mayor-fem --topopt --topopt-iters 12 --volume-fraction-start 0.8 --volume-fraction-end 0.35
+              swift run mayor-fem --topopt-literature-bench --solver explicit --backend metal --convoy-workers 3 --visualize out/topopt_literature
               swift run mayor-fem --visualize out/viz2d --deformation-scale 12
             """
         )
@@ -486,6 +662,121 @@ private func printStabilizationBenchmarkTable(_ sweep: StabilizationBenchmarkSwe
     }
 }
 
+private func writeTopologyLiteratureRunsCSV(
+    _ runs: [TopologyLiteratureRun2D],
+    outputDirectory: String
+) throws {
+    let directoryURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let fileURL = directoryURL.appendingPathComponent("topopt_literature_runs.csv")
+
+    var lines = [
+        "case_id,case_name,reference,profile,load_magnitude,element_count,runtime_seconds,objective,compliance,average_density,final_residual,max_von_mises,max_eq_plastic,max_damage,yield_onset_load_factor,right_edge_density,converged,iterations_completed"
+    ]
+    lines.reserveCapacity(runs.count + 1)
+
+    for run in runs {
+        let loadMagnitude = run.loadMagnitude.map { String($0) } ?? ""
+        lines.append(
+            "\"\(run.caseID)\",\"\(run.caseName)\",\"\(run.reference)\",\"\(run.profileName)\",\(loadMagnitude),\(run.elementCount),\(run.runtimeSeconds),\(run.objective),\(run.compliance),\(run.averageDensity),\(run.finalResidualNorm),\(run.maxVonMises),\(run.maxEquivalentPlasticStrain),\(run.maxDamage),\(run.yieldOnsetLoadFactor),\(run.rightEdgeDensity),\(run.converged),\(run.iterationsCompleted)"
+        )
+    }
+
+    try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
+}
+
+private func writeTopologyLiteratureChecksCSV(
+    _ checks: [TopologyLiteratureTrendCheck2D],
+    outputDirectory: String
+) throws {
+    let directoryURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let fileURL = directoryURL.appendingPathComponent("topopt_literature_checks.csv")
+
+    var lines = ["case_name,reference,metric,observed,target,passed"]
+    lines.reserveCapacity(checks.count + 1)
+    for check in checks {
+        lines.append(
+            "\"\(check.caseName)\",\"\(check.reference)\",\"\(check.metric)\",\"\(check.observed)\",\"\(check.target)\",\(check.passed)"
+        )
+    }
+
+    try lines.joined(separator: "\n").appending("\n").write(to: fileURL, atomically: true, encoding: .utf8)
+}
+
+private func printTopologyLiteratureRunsTable(_ runs: [TopologyLiteratureRun2D]) {
+    print("| Case | Profile | Load | Elements | Compliance | Avg Density | Max EqP | Yield LF | Right-Edge ρ | Runtime (s) |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+
+    for run in runs {
+        let load = run.loadMagnitude.map { String(format: "%.1f", $0) } ?? "-"
+        print(
+            String(
+                format: "| %@ | %@ | %@ | %d | %.6e | %.4f | %.6f | %.3f | %.4f | %.2f |",
+                run.caseName,
+                run.profileName,
+                load,
+                run.elementCount,
+                run.compliance,
+                run.averageDensity,
+                run.maxEquivalentPlasticStrain,
+                run.yieldOnsetLoadFactor,
+                run.rightEdgeDensity,
+                run.runtimeSeconds
+            )
+        )
+    }
+}
+
+private func printTopologyLiteratureChecksTable(_ checks: [TopologyLiteratureTrendCheck2D]) {
+    print("| Case | Metric | Observed | Target | Status |")
+    print("|---|---|---:|---:|---|")
+    for check in checks {
+        print(
+            "| \(check.caseName) | \(check.metric) | \(check.observed) | \(check.target) | \(check.passed ? "PASS" : "FAIL") |"
+        )
+    }
+}
+
+private func exportTopologyLiteratureVisuals(
+    runs: [TopologyLiteratureRun2D],
+    outputDirectory: String,
+    deformationScale: Float,
+    imageWidth: Int,
+    imageHeight: Int
+) throws {
+    let root = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+        .appendingPathComponent("literature_runs", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    for run in runs {
+        let loadLabel = run.loadMagnitude.map { String(format: "_load_%04.1f", $0).replacingOccurrences(of: ".", with: "p") } ?? ""
+        let runID = "\(run.caseID)__\(run.profileName)\(loadLabel)"
+        let runDirectory = root.appendingPathComponent(runID, isDirectory: true)
+        let vtkDirectory = runDirectory.appendingPathComponent("vtk", isDirectory: true)
+        let pngDirectory = runDirectory.appendingPathComponent("png", isDirectory: true)
+
+        _ = try FEMVisualization.writeVTKSeries(
+            problem: run.problem,
+            result: run.topologyResult.finalSolve,
+            outputDirectory: vtkDirectory.path,
+            deformationScale: deformationScale
+        )
+        _ = try FEMVisualization.writePNGSeries(
+            problem: run.problem,
+            result: run.topologyResult.finalSolve,
+            outputDirectory: pngDirectory.path,
+            deformationScale: deformationScale,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight
+        )
+
+        try writeDensityCSV(run.topologyResult.densities, outputDirectory: runDirectory.path)
+        try writeTopologyHistoryCSV(run.topologyResult.history, outputDirectory: runDirectory.path)
+        try writeDensityHistoryCSVs(run.topologyResult.densityHistory, outputDirectory: runDirectory.path)
+    }
+}
+
 do {
     let options = try CLIOptions.parse(arguments: CommandLine.arguments)
 
@@ -500,6 +791,43 @@ do {
         if let visualizationDirectory = options.visualizationDirectory {
             try writeStabilizationBenchmarkCSV(sweep, outputDirectory: visualizationDirectory)
             print("Stabilization benchmark CSV: \(visualizationDirectory)/stabilization_benchmark.csv")
+        }
+        exit(0)
+    }
+
+    if options.runTopologyLiteratureBenchmark {
+        guard options.solverMode == .explicitDynamics else {
+            throw FEMError.invalidBoundaryCondition("--topopt-literature-bench requires --solver explicit.")
+        }
+
+        let sweep = try TopologyLiteratureBenchmarks2D.runConvoy(
+            backendChoice: options.backend,
+            controls: options.topologyLiteratureControls()
+        )
+
+        print("Topology literature convoy runs:")
+        printTopologyLiteratureRunsTable(sweep.runs)
+        print("")
+        print("Topology literature trend checks:")
+        printTopologyLiteratureChecksTable(sweep.checks)
+
+        if let visualizationDirectory = options.visualizationDirectory {
+            try writeTopologyLiteratureRunsCSV(sweep.runs, outputDirectory: visualizationDirectory)
+            try writeTopologyLiteratureChecksCSV(sweep.checks, outputDirectory: visualizationDirectory)
+            try exportTopologyLiteratureVisuals(
+                runs: sweep.runs,
+                outputDirectory: visualizationDirectory,
+                deformationScale: options.deformationScale,
+                imageWidth: options.imageWidth,
+                imageHeight: options.imageHeight
+            )
+            print("Topology literature CSV: \(visualizationDirectory)/topopt_literature_runs.csv")
+            print("Topology literature checks CSV: \(visualizationDirectory)/topopt_literature_checks.csv")
+            print("Topology literature visualizations: \(visualizationDirectory)/literature_runs/")
+        }
+
+        if !sweep.allPassed {
+            exit(2)
         }
         exit(0)
     }
@@ -532,6 +860,7 @@ do {
         nx: options.nx,
         ny: options.ny,
         order: options.order,
+        integrationScheme: options.integrationScheme,
         subdivisionLevels: options.subdivisionLevels,
         endDisplacement: options.displacement,
         loadSteps: options.steps
@@ -554,9 +883,15 @@ do {
             objective = TopologyObjectives2D.maxDamage
         case "compliance_plus_von_mises":
             objective = TopologyObjectives2D.compliancePlusMeanVonMises(weight: options.objectiveWeight)
+        case "compliance_plus_plasticity":
+            objective = TopologyObjectives2D.compliancePlusPlasticity(
+                stressWeight: options.objectiveWeight,
+                plasticWeight: 250 * options.objectiveWeight,
+                damageWeight: 80 * options.objectiveWeight
+            )
         default:
             throw FEMError.invalidBoundaryCondition(
-                "--objective supports: compliance|mean_von_mises|max_damage|compliance_plus_von_mises"
+                "--objective supports: compliance|mean_von_mises|max_damage|compliance_plus_von_mises|compliance_plus_plasticity"
             )
         }
 

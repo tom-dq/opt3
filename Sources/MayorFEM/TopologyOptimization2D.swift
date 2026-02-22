@@ -28,10 +28,36 @@ public enum TopologyObjectives2D {
         return maxValue
     }
 
+    public static func meanEquivalentPlasticStrain(_ input: PatchObjectiveInput2D) -> Float {
+        var sum: Float = 0
+        var count: Float = 0
+        for elementIndex in input.patchElements where elementIndex >= 0 && elementIndex < input.solveResult.elementStates.count {
+            sum += input.solveResult.elementStates[elementIndex].equivalentPlasticStrain
+            count += 1
+        }
+        return count > 0 ? sum / count : 0
+    }
+
     public static func compliancePlusMeanVonMises(weight: Float = 1e-3) -> PatchObjectiveFunction2D {
         let clampedWeight = max(0, weight)
         return { input in
             compliance(input) + clampedWeight * meanVonMises(input)
+        }
+    }
+
+    public static func compliancePlusPlasticity(
+        stressWeight: Float = 1e-3,
+        plasticWeight: Float = 100,
+        damageWeight: Float = 10
+    ) -> PatchObjectiveFunction2D {
+        let safeStressWeight = max(0, stressWeight)
+        let safePlasticWeight = max(0, plasticWeight)
+        let safeDamageWeight = max(0, damageWeight)
+        return { input in
+            compliance(input)
+                + safeStressWeight * meanVonMises(input)
+                + safePlasticWeight * meanEquivalentPlasticStrain(input)
+                + safeDamageWeight * maxDamage(input)
         }
     }
 }
@@ -92,7 +118,17 @@ public final class PatchTopologyOptimizer2D {
             var totalDensityChange: Float = 0
             var updatedElementCount = 0
 
-            for referenceElement in stride(from: 0, to: elementCount, by: controls.referenceElementStride) {
+            var referenceElements = Array(stride(from: 0, to: elementCount, by: controls.referenceElementStride))
+            if let maxEvaluations = controls.maxReferenceEvaluationsPerIteration,
+               maxEvaluations < referenceElements.count
+            {
+                referenceElements = sampledReferenceElements(
+                    from: referenceElements,
+                    maxCount: maxEvaluations
+                )
+            }
+
+            for referenceElement in referenceElements {
                 let patch = patchElements(around: referenceElement, radius: controls.patchRadius)
                 if patch.isEmpty {
                     continue
@@ -341,5 +377,25 @@ public final class PatchTopologyOptimizer2D {
                 min(controls.maximumDensity, densities[index] + shift)
             )
         }
+    }
+
+    private func sampledReferenceElements(from references: [Int], maxCount: Int) -> [Int] {
+        if references.count <= maxCount {
+            return references
+        }
+        if maxCount <= 1 {
+            return [references[0]]
+        }
+
+        var sampled: [Int] = []
+        sampled.reserveCapacity(maxCount)
+        let scaling = Float(references.count - 1) / Float(maxCount - 1)
+
+        for index in 0..<maxCount {
+            let mapped = Int(round(Float(index) * scaling))
+            sampled.append(references[min(references.count - 1, max(0, mapped))])
+        }
+
+        return Array(Set(sampled)).sorted()
     }
 }

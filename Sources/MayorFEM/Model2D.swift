@@ -288,6 +288,7 @@ public struct TopologyOptimizationControls2D {
     public var targetVolumeFractionEnd: Float?
     public var moveLimit: Float
     public var referenceElementStride: Int
+    public var maxReferenceEvaluationsPerIteration: Int?
     public var objectiveTolerance: Float
     public var densityChangeTolerance: Float
     public var explicitControls: ExplicitSolverControls2D
@@ -301,6 +302,7 @@ public struct TopologyOptimizationControls2D {
         targetVolumeFractionEnd: Float? = nil,
         moveLimit: Float = 0.12,
         referenceElementStride: Int = 1,
+        maxReferenceEvaluationsPerIteration: Int? = nil,
         objectiveTolerance: Float = 1e-5,
         densityChangeTolerance: Float = 1e-4,
         explicitControls: ExplicitSolverControls2D = ExplicitSolverControls2D()
@@ -323,6 +325,11 @@ public struct TopologyOptimizationControls2D {
 
         self.moveLimit = max(1e-3, moveLimit)
         self.referenceElementStride = max(1, referenceElementStride)
+        if let maxReferenceEvaluationsPerIteration {
+            self.maxReferenceEvaluationsPerIteration = max(1, maxReferenceEvaluationsPerIteration)
+        } else {
+            self.maxReferenceEvaluationsPerIteration = nil
+        }
         self.objectiveTolerance = max(1e-8, objectiveTolerance)
         self.densityChangeTolerance = max(0, densityChangeTolerance)
         self.explicitControls = explicitControls

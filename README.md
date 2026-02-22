@@ -10,15 +10,15 @@ MayorFEM is a 2D nonlinear finite element prototype focused on small-model speed
 - Explicit nonlinear solver path tuned for small-model robustness.
 - CPU and Metal backends for the explicit element loop (`auto` selects Metal when available).
 - Implicit Newton path retained for comparison/debugging.
-- Triangular element workflow:
-  - Linear triangles (`tri3`)
-  - Quadratic triangles (`tri6`) represented and solved through consistent sub-triangulation
+- Quad element workflow:
+  - Linear quads (`quad4`)
+  - Quadratic option via enriched resolution (`--order quadratic`)
 - Uniform mesh subdivision (`--subdivide`) for refinement studies.
 - Patch-based topology optimization:
   - Density design variables per element
   - Reference element toggled on/off in local patches
   - Arbitrary patch objective callback API
-  - Built-in objectives: `compliance`, `mean_von_mises`, `max_damage`, `compliance_plus_von_mises`
+  - Built-in objectives: `compliance`, `mean_von_mises`, `max_damage`, `compliance_plus_von_mises`, `compliance_plus_plasticity`
   - Target volume-fraction projection and convergence stopping controls
 - Visualization export per load step:
   - VTK series (`.vtk` + `series.pvd`)
@@ -39,7 +39,8 @@ Key arguments:
 - `--backend auto|cpu|metal`
 - `--nx N`, `--ny N` base rectangular mesh divisions
 - `--order linear|quadratic` element order
-- `--subdivide L` uniform refinement levels (each level multiplies triangle count by 4)
+- `--integration full|reduced`
+- `--subdivide L` uniform refinement levels (each level multiplies quad count by 4)
 - Explicit controls:
   - `--explicit-substeps N`
   - `--relax-iters N`
@@ -102,6 +103,24 @@ Topopt outputs in `--visualize` directory include:
 - `topopt_history.csv`
 - `density_history/densities_iter_XXXX.csv`
 - optional per-iteration solve exports under `topopt_iterations/` when `--topopt-export-every > 0`
+
+### Topology Literature Convoy
+
+```bash
+swift run mayor-fem \
+  --topopt-literature-bench --solver explicit --backend auto \
+  --convoy-workers 3 \
+  --topopt-iters 4 --patch-radius 1 --reference-stride 12 \
+  --min-density 0.001 --max-density 1.0 \
+  --integration full \
+  --visualize out/topopt_literature
+```
+
+This runs nonlinear topology reference cases (Amir L/U brackets and Liang cantilever load sweep), prints a large comparison table, writes:
+
+- `topopt_literature_runs.csv`
+- `topopt_literature_checks.csv`
+- per-run VTK/PNG/density history under `literature_runs/`
 
 ## Tests
 

@@ -318,6 +318,103 @@ func topologyObjectiveVariantsAreFinite() throws {
 }
 
 @Test
+func topologyLiteratureProblemBuildersProduceValidQuadMeshes() throws {
+    let lBracket = TopologyLiteratureProblems2D.amirLBracket(
+        loadLocation: .topRight,
+        nx: 12,
+        ny: 12,
+        order: .linear,
+        integrationScheme: .reduced,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let uBracket = TopologyLiteratureProblems2D.amirUBracket(
+        nx: 14,
+        ny: 10,
+        order: .linear,
+        integrationScheme: .full,
+        endDisplacement: 0.03,
+        loadSteps: 4
+    )
+    let cantilever = TopologyLiteratureProblems2D.liangCantilever(
+        loadMagnitude: 10,
+        nx: 16,
+        ny: 6,
+        order: .linear,
+        integrationScheme: .full,
+        loadSteps: 4
+    )
+
+    let problems = [lBracket, uBracket, cantilever]
+    for problem in problems {
+        let prepared = try problem.mesh.prepare()
+        #expect(!prepared.elements.isEmpty)
+        #expect(prepared.elements.allSatisfy { $0.area > 0 })
+        #expect(problem.prescribedDisplacements.contains { abs($0.value) < 1e-8 })
+        #expect(problem.prescribedDisplacements.contains { abs($0.value) > 0 })
+    }
+}
+
+@Test
+func topologyLiteratureConvoySmokeTestRunsAndProducesFiniteMetrics() throws {
+    let controls = TopologyLiteratureBenchmarkControls2D(
+        order: .linear,
+        integrationScheme: .full,
+        iterations: 1,
+        patchRadius: 1,
+        minimumDensity: 0.001,
+        maximumDensity: 1.0,
+        moveLimit: 0.2,
+        referenceElementStride: 6,
+        objectiveTolerance: 1e-7,
+        densityChangeTolerance: 0,
+        explicitControls: ExplicitSolverControls2D(
+            stabilization: ExplicitStabilizationControls2D(
+                residualBlend: 0.25,
+                velocitySmoothing: 0.15,
+                displacementSmoothing: 0.0,
+                smoothingPasses: 1
+            ),
+            substepsPerLoadStep: 12,
+            relaxationIterationsPerSubstep: 3,
+            timeStep: 2.0e-4,
+            damping: 0.10,
+            massDensity: 2_000,
+            densityPenalty: 3.0,
+            velocityClamp: 8.0
+        ),
+        convoyWorkers: 1,
+        caseIDs: Set(["amir_l_bracket_top"]),
+        liangLoads: [5],
+        lBracketNX: 10,
+        lBracketNY: 10,
+        uBracketNX: 10,
+        uBracketNY: 8,
+        cantileverNX: 12,
+        cantileverNY: 4,
+        loadSteps: 3,
+        stressWeight: 5e-4,
+        plasticWeight: 200,
+        damageWeight: 50
+    )
+
+    let sweep = try TopologyLiteratureBenchmarks2D.runConvoy(
+        backendChoice: .cpu,
+        controls: controls
+    )
+
+    #expect(sweep.runs.count == 2)
+    #expect(!sweep.checks.isEmpty)
+    for run in sweep.runs {
+        #expect(run.compliance.isFinite)
+        #expect(run.objective.isFinite)
+        #expect(run.averageDensity.isFinite)
+        #expect(run.rightEdgeDensity.isFinite)
+        #expect(run.elementCount > 0)
+    }
+}
+
+@Test
 func sparseBiCGSTABSolvesReferenceSystem() throws {
     var builder = SparseMatrixBuilder(dimension: 3)
     builder.add(row: 0, column: 0, value: 4)
